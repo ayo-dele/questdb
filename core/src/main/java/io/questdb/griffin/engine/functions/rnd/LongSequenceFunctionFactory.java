@@ -46,7 +46,7 @@ public class LongSequenceFunctionFactory implements FunctionFactory {
     }
 
     @Override
-    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) throws SqlException {
+    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) throws SqlException {
         Function countFunc;
         final Function seedLoFunc;
         final Function seedHiFunc;
@@ -203,7 +203,7 @@ public class LongSequenceFunctionFactory implements FunctionFactory {
 
     static {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("x", ColumnType.LONG));
+        metadata.add(new TableColumnMetadata("x", ColumnType.LONG, null));
         METADATA = metadata;
     }
 }

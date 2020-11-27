@@ -442,8 +442,18 @@ public class CompactMap implements Map {
         }
 
         @Override
+        public void skip(int bytes) {
+            entries.skip(bytes);
+        }
+
+        @Override
         public void putChar(char value) {
             entries.putChar(value);
+        }
+
+        @Override
+        public void putRecord(Record value) {
+            // noop
         }
 
         @Override

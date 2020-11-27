@@ -32,24 +32,28 @@ public final class OperatorExpression {
     public static final int UNARY = 1;
     public static final int BINARY = 2;
     public static final int SET = 3;
+    public static final int DOT_PRECEDENCE = 1;
+
     static final ObjList<OperatorExpression> operators = new ObjList<>() {{
-        add(new OperatorExpression(".", 1, false, BINARY));
+        add(new OperatorExpression(".", DOT_PRECEDENCE, false, BINARY));
         add(new OperatorExpression("^", 2, false, BINARY));
         add(new OperatorExpression("*", 3, true, BINARY));
         add(new OperatorExpression("/", 3, true, BINARY));
         add(new OperatorExpression("%", 3, true, BINARY));
         add(new OperatorExpression("+", 4, true, BINARY));
         add(new OperatorExpression("-", 4, true, BINARY));
+        add(new OperatorExpression("||", 5, true, BINARY));
         add(new OperatorExpression("<", 6, true, BINARY));
         add(new OperatorExpression("<=", 6, true, BINARY));
         add(new OperatorExpression(">", 6, true, BINARY));
         add(new OperatorExpression(">=", 6, true, BINARY));
         add(new OperatorExpression("=", 7, true, BINARY));
-        add(new OperatorExpression("~=", 7, true, BINARY));
+        add(new OperatorExpression("~", 7, true, BINARY));
         add(new OperatorExpression("!=", 7, true, BINARY));
         add(new OperatorExpression("<>", 7, true, BINARY));
         add(new OperatorExpression("!~", 7, true, BINARY));
         add(new OperatorExpression("in", 7, true, SET, false));
+        add(new OperatorExpression("between", 7, true, SET, false));
         add(new OperatorExpression("and", 11, true, BINARY, false));
         add(new OperatorExpression("or", 11, true, BINARY, false));
         add(new OperatorExpression("not", 11, true, UNARY, false));

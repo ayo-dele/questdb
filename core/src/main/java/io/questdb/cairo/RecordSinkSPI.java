@@ -24,6 +24,7 @@
 
 package io.questdb.cairo;
 
+import io.questdb.cairo.sql.Record;
 import io.questdb.std.BinarySequence;
 import io.questdb.std.Long256;
 
@@ -54,5 +55,9 @@ public interface RecordSinkSPI {
 
     void putStr(CharSequence value, int lo, int hi);
 
+    void putRecord(Record value);
+
     void putTimestamp(long value);
+
+    void skip(int bytes);
 }

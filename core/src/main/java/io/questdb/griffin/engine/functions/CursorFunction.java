@@ -24,16 +24,15 @@
 
 package io.questdb.griffin.engine.functions;
 
-import io.questdb.cairo.sql.Function;
+import io.questdb.cairo.ColumnType;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursorFactory;
-import io.questdb.cairo.sql.RecordMetadata;
-import io.questdb.griffin.TypeEx;
+import io.questdb.cairo.sql.ScalarFunction;
 import io.questdb.std.BinarySequence;
 import io.questdb.std.Long256;
 import io.questdb.std.str.CharSink;
 
-public class CursorFunction implements Function {
+public class CursorFunction implements ScalarFunction {
     private final int position;
     private final RecordCursorFactory factory;
 
@@ -108,11 +107,6 @@ public class CursorFunction implements Function {
     }
 
     @Override
-    public RecordMetadata getMetadata() {
-        return factory.getMetadata();
-    }
-
-    @Override
     public final int getPosition() {
         return position;
     }
@@ -164,6 +158,6 @@ public class CursorFunction implements Function {
 
     @Override
     public final int getType() {
-        return TypeEx.CURSOR;
+        return ColumnType.CURSOR;
     }
 }

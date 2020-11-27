@@ -24,14 +24,14 @@
 
 package io.questdb.cairo;
 
-import io.questdb.griffin.TypeEx;
 import io.questdb.std.IntObjHashMap;
 import io.questdb.std.Long256;
 import io.questdb.std.LowerCaseAsciiCharSequenceIntHashMap;
 
 public final class ColumnType {
     // column type version as written to the metadata file
-    public static final int VERSION = 416;
+    public static final int VERSION = 417;
+    public static final int VERSION_THAT_ADDED_TABLE_ID = 417;
 
     public static final int BOOLEAN = 0;
     public static final int BYTE = 1;
@@ -48,11 +48,40 @@ public final class ColumnType {
     public static final int LONG256 = 12;
     public static final int BINARY = 13;
     public static final int PARAMETER = 14;
-    public static final int MAX = PARAMETER;
+    public static final int VAR_ARG = 16;
+    public static final int CURSOR = 15;
+    public static final int RECORD = 16;
+    public static final int MAX = RECORD;
     private static final IntObjHashMap<String> typeNameMap = new IntObjHashMap<>();
     private static final LowerCaseAsciiCharSequenceIntHashMap nameTypeMap = new LowerCaseAsciiCharSequenceIntHashMap();
     private static final int[] TYPE_SIZE_POW2 = new int[ColumnType.PARAMETER + 1];
     private static final int[] TYPE_SIZE = new int[ColumnType.PARAMETER + 1];
+
+    private ColumnType() {
+    }
+
+    public static int columnTypeOf(CharSequence name) {
+        return nameTypeMap.get(name);
+    }
+
+    public static String nameOf(int columnType) {
+        final int index = typeNameMap.keyIndex(columnType);
+        if (index > -1) {
+            return "unknown";
+        }
+        return typeNameMap.valueAtQuick(index);
+    }
+
+    public static int pow2SizeOf(int columnType) {
+        return TYPE_SIZE_POW2[columnType];
+    }
+
+    public static int sizeOf(int columnType) {
+        if (columnType < 0 || columnType > ColumnType.PARAMETER) {
+            return -1;
+        }
+        return TYPE_SIZE[columnType];
+    }
 
     static {
         typeNameMap.put(BOOLEAN, "BOOLEAN");
@@ -69,8 +98,9 @@ public final class ColumnType {
         typeNameMap.put(DATE, "DATE");
         typeNameMap.put(PARAMETER, "PARAMETER");
         typeNameMap.put(TIMESTAMP, "TIMESTAMP");
-        typeNameMap.put(TypeEx.CURSOR, "CURSOR");
         typeNameMap.put(LONG256, "LONG256");
+        typeNameMap.put(CURSOR, "CURSOR");
+        typeNameMap.put(RECORD, "RECORD");
 
         nameTypeMap.put("boolean", BOOLEAN);
         nameTypeMap.put("byte", BYTE);
@@ -86,8 +116,13 @@ public final class ColumnType {
         nameTypeMap.put("date", DATE);
         nameTypeMap.put("parameter", PARAMETER);
         nameTypeMap.put("timestamp", TIMESTAMP);
-        nameTypeMap.put("cursor", TypeEx.CURSOR);
+        nameTypeMap.put("cursor", CURSOR);
         nameTypeMap.put("long256", ColumnType.LONG256);
+        nameTypeMap.put("text", ColumnType.STRING);
+        nameTypeMap.put("smallint", ColumnType.SHORT);
+        nameTypeMap.put("bigint", ColumnType.LONG);
+        nameTypeMap.put("real", ColumnType.FLOAT);
+        nameTypeMap.put("bytea", ColumnType.STRING);
 
         TYPE_SIZE_POW2[ColumnType.BOOLEAN] = 0;
         TYPE_SIZE_POW2[ColumnType.BYTE] = 0;
@@ -114,31 +149,5 @@ public final class ColumnType {
         TYPE_SIZE[ColumnType.DATE] = Long.BYTES;
         TYPE_SIZE[ColumnType.TIMESTAMP] = Long.BYTES;
         TYPE_SIZE[ColumnType.LONG256] = Long256.BYTES;
-    }
-
-    private ColumnType() {
-    }
-
-    public static int columnTypeOf(CharSequence name) {
-        return nameTypeMap.get(name);
-    }
-
-    public static String nameOf(int columnType) {
-        final int index = typeNameMap.keyIndex(columnType);
-        if (index > -1) {
-            return "unknown";
-        }
-        return typeNameMap.valueAtQuick(index);
-    }
-
-    public static int pow2SizeOf(int columnType) {
-        return TYPE_SIZE_POW2[columnType];
-    }
-
-    public static int sizeOf(int columnType) {
-        if (columnType < 0 || columnType > ColumnType.PARAMETER) {
-            return -1;
-        }
-        return TYPE_SIZE[columnType];
     }
 }

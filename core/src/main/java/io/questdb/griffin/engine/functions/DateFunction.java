@@ -26,16 +26,13 @@ package io.questdb.griffin.engine.functions;
 
 
 import io.questdb.cairo.ColumnType;
-import io.questdb.cairo.sql.Function;
-import io.questdb.cairo.sql.Record;
-import io.questdb.cairo.sql.RecordCursorFactory;
-import io.questdb.cairo.sql.RecordMetadata;
+import io.questdb.cairo.sql.*;
 import io.questdb.std.BinarySequence;
 import io.questdb.std.Long256;
 import io.questdb.std.Numbers;
 import io.questdb.std.str.CharSink;
 
-public abstract class DateFunction implements Function {
+public abstract class DateFunction implements ScalarFunction {
     private final int position;
 
     public DateFunction(int position) {
@@ -95,11 +92,6 @@ public abstract class DateFunction implements Function {
     @Override
     public final long getLong(Record rec) {
         return getDate(rec);
-    }
-
-    @Override
-    public RecordMetadata getMetadata() {
-        throw new UnsupportedOperationException();
     }
 
     @Override

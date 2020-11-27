@@ -25,10 +25,7 @@
 package io.questdb.griffin.model;
 
 import io.questdb.griffin.OperatorExpression;
-import io.questdb.std.Mutable;
-import io.questdb.std.ObjList;
-import io.questdb.std.ObjectFactory;
-import io.questdb.std.Sinkable;
+import io.questdb.std.*;
 import io.questdb.std.str.CharSink;
 
 public class ExpressionNode implements Mutable, Sinkable {
@@ -37,7 +34,9 @@ public class ExpressionNode implements Mutable, Sinkable {
     public static final int OPERATION = 1;
     public static final int CONSTANT = 2;
     public static final int LITERAL = 4;
+    public static final int MEMBER_ACCESS = 5;
     public static final int FUNCTION = 8;
+    public static final int ARRAY_ACCESS = 9;
     public static final int CONTROL = 16;
     public static final int SET_OPERATION = 32;
     public static final int QUERY = 65;
@@ -54,6 +53,59 @@ public class ExpressionNode implements Mutable, Sinkable {
     public int intrinsicValue = IntrinsicModel.UNDEFINED;
 
     private ExpressionNode() {
+    }
+
+    public static boolean compareNodesExact(ExpressionNode a, ExpressionNode b) {
+        if (a == null && b == null) {
+            return true;
+        }
+
+        if (a == null || b == null || a.type != b.type) {
+            return false;
+        }
+        return Chars.equals(a.token, b.token) && compareArgsExact(a, b);
+    }
+
+    public static boolean compareNodesGroupBy(
+            ExpressionNode groupByExpr,
+            ExpressionNode columnExpr,
+            QueryModel translatingModel
+    ) {
+        if (groupByExpr == null && columnExpr == null) {
+            return true;
+        }
+
+        if (groupByExpr == null || columnExpr == null || groupByExpr.type != columnExpr.type) {
+            return false;
+        }
+
+        if (!Chars.equals(groupByExpr.token, columnExpr.token)) {
+
+            int index = translatingModel.getAliasToColumnMap().keyIndex(columnExpr.token);
+            if (index > -1) {
+                return false;
+            }
+
+            final QueryColumn qc = translatingModel.getAliasToColumnMap().valueAt(index);
+            final CharSequence tok = groupByExpr.token;
+            final CharSequence qcTok = qc.getAst().token;
+            if (Chars.equals(qcTok, tok)) {
+                return true;
+            }
+
+            int dot = Chars.indexOf(tok, '.');
+
+            if (dot > -1 &&
+                    translatingModel.getAliasIndex(tok, 0, dot) > -1
+                    && Chars.equals(qcTok, tok, dot + 1, tok.length())
+            ) {
+                return compareArgs(groupByExpr, columnExpr, translatingModel);
+            }
+
+            return false;
+        }
+
+        return compareArgs(groupByExpr, columnExpr, translatingModel);
     }
 
     public void clear() {
@@ -99,6 +151,9 @@ public class ExpressionNode implements Mutable, Sinkable {
                 break;
             case 2:
                 if (OperatorExpression.isOperator(token)) {
+                    if (lhs == null) {
+                        System.out.println("not good");
+                    }
                     lhs.toSink(sink);
                     sink.put(' ');
                     sink.put(token);
@@ -142,6 +197,51 @@ public class ExpressionNode implements Mutable, Sinkable {
                 }
                 break;
         }
+    }
+
+    private static boolean compareArgs(
+            ExpressionNode groupByExpr,
+            ExpressionNode columnExpr,
+            QueryModel translatingModel
+    ) {
+        final int groupByArgsSize = groupByExpr.args.size();
+        final int selectNodeArgsSize = columnExpr.args.size();
+
+        if (groupByArgsSize != selectNodeArgsSize) {
+            return false;
+        }
+
+        if (groupByArgsSize < 3) {
+            return compareNodesGroupBy(groupByExpr.lhs, columnExpr.lhs, translatingModel)
+                    && compareNodesGroupBy(groupByExpr.rhs, columnExpr.rhs, translatingModel);
+        }
+
+        for (int i = 0; i < groupByArgsSize; i++) {
+            if (!compareNodesGroupBy(groupByExpr.args.get(i), columnExpr.args.get(i), translatingModel)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean compareArgsExact(ExpressionNode a, ExpressionNode b) {
+        final int groupByArgsSize = a.args.size();
+        final int selectNodeArgsSize = b.args.size();
+
+        if (groupByArgsSize != selectNodeArgsSize) {
+            return false;
+        }
+
+        if (groupByArgsSize < 3) {
+            return compareNodesExact(a.lhs, b.lhs) && compareNodesExact(a.rhs, b.rhs);
+        }
+
+        for (int i = 0; i < groupByArgsSize; i++) {
+            if (!compareNodesExact(a.args.get(i), b.args.get(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static final class ExpressionNodeFactory implements ObjectFactory<ExpressionNode> {

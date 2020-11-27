@@ -59,39 +59,6 @@ class SqlOptimiser {
     private static final int JOIN_OP_OR = 3;
     private static final int JOIN_OP_REGEX = 4;
     private static final IntHashSet flexColumnModelTypes = new IntHashSet();
-
-    static {
-        notOps.put("not", NOT_OP_NOT);
-        notOps.put("and", NOT_OP_AND);
-        notOps.put("or", NOT_OP_OR);
-        notOps.put(">", NOT_OP_GREATER);
-        notOps.put(">=", NOT_OP_GREATER_EQ);
-        notOps.put("<", NOT_OP_LESS);
-        notOps.put("<=", NOT_OP_LESS_EQ);
-        notOps.put("=", NOT_OP_EQUAL);
-        notOps.put("!=", NOT_OP_NOT_EQ);
-        notOps.put("<>", NOT_OP_NOT_EQ);
-
-        joinBarriers = new IntHashSet();
-        joinBarriers.add(QueryModel.JOIN_OUTER);
-        joinBarriers.add(QueryModel.JOIN_ASOF);
-        joinBarriers.add(QueryModel.JOIN_SPLICE);
-        joinBarriers.add(QueryModel.JOIN_LT);
-
-        nullConstants.add("null");
-        nullConstants.add("NaN");
-
-        joinOps.put("=", JOIN_OP_EQUAL);
-        joinOps.put("and", JOIN_OP_AND);
-        joinOps.put("or", JOIN_OP_OR);
-        joinOps.put("~", JOIN_OP_REGEX);
-
-        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_CHOOSE);
-        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_NONE);
-        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_VIRTUAL);
-        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_GROUP_BY);
-    }
-
     private final CairoEngine engine;
     private final FlyweightCharSequence tableLookupSequence = new FlyweightCharSequence();
     private final ObjectPool<ExpressionNode> expressionNodePool;
@@ -128,6 +95,8 @@ class SqlOptimiser {
     private final ColumnPrefixEraser columnPrefixEraser = new ColumnPrefixEraser();
     private final Path path;
     private final ObjList<ExpressionNode> orderByAdvice = new ObjList<>();
+    private final LowerCaseCharSequenceObjHashMap<QueryColumn> tmpCursorAliases = new LowerCaseCharSequenceObjHashMap<>();
+    private final ObjList<Function> functionsInFlight = new ObjList<>();
     private int defaultAliasCount = 0;
     private ObjList<JoinContext> emittedJoinClauses;
 
@@ -161,33 +130,6 @@ class SqlOptimiser {
         model.getJoinModels().getQuick(parent).removeDependency(child);
     }
 
-    private static boolean isNotBindVariable(CharSequence token) {
-        int len = token.length();
-        if (len < 1) {
-            return true;
-        }
-
-        final char first = token.charAt(0);
-        if (first == ':') {
-            return false;
-        }
-
-        if (first == '?' && len == 1) {
-            return false;
-        }
-
-        if (first == '$') {
-            try {
-                Numbers.parseInt(token, 1, len);
-                return false;
-            } catch (NumericException e) {
-                return true;
-            }
-        }
-
-        return true;
-    }
-
     private static boolean modelIsFlex(QueryModel model) {
         return model != null && flexColumnModelTypes.contains(model.getSelectModelType());
     }
@@ -203,7 +145,7 @@ class SqlOptimiser {
         if (validatingModel != null) {
             CharSequence refColumn = column.getAst().token;
             final int dot = Chars.indexOf(refColumn, '.');
-            getIndexOfTableForColumn(validatingModel, refColumn, dot, column.getAst().position);
+            validateColumnAndGetModelIndex(validatingModel, refColumn, dot, column.getAst().position);
             // when we have only one model, e.g. this is not a join
             // and there is table alias to lookup column
             // we will remove this alias as unneeded
@@ -221,6 +163,91 @@ class SqlOptimiser {
             }
         }
         translatingModel.addBottomUpColumn(column);
+    }
+
+    private QueryColumn addCursorFunctionAsCrossJoin(
+            ExpressionNode node,
+            @Nullable CharSequence alias,
+            QueryModel cursorModel,
+            @Nullable QueryModel innerVirtualModel,
+            QueryModel translatingModel,
+            QueryModel baseModel,
+            SqlExecutionContext sqlExecutionContext
+    ) throws SqlException {
+        QueryColumn qc = cursorModel.findBottomUpColumnByAst(node);
+        if (qc == null) {
+
+            // we are about to add new column as a join model to the base model
+            // the name of this column must not clash with any name of the base mode
+            CharSequence baseAlias;
+            if (alias != null) {
+                baseAlias = createColumnAlias(alias, baseModel);
+            } else {
+                baseAlias = createColumnAlias(node, baseModel);
+            }
+
+            // add to temp aliases so that two cursors cannot use the same alias!
+            baseAlias = SqlUtil.createColumnAlias(characterStore, baseAlias, -1, tmpCursorAliases);
+
+            final QueryColumn crossColumn = queryColumnPool.next().of(baseAlias, node);
+
+            final QueryModel cross = queryModelPool.next();
+            cross.setJoinType(QueryModel.JOIN_CROSS);
+            cross.setSelectModelType(QueryModel.SELECT_MODEL_CURSOR);
+            cross.setAlias(makeJoinAlias(defaultAliasCount++));
+
+            final QueryModel crossInner = queryModelPool.next();
+            crossInner.setTableName(node);
+            parseFunctionAndEnumerateColumns(crossInner, sqlExecutionContext);
+            cross.setNestedModel(crossInner);
+
+            cross.addBottomUpColumn(crossColumn);
+            baseModel.addJoinModel(cross);
+
+            // keep track of duplicates
+            tmpCursorAliases.put(baseAlias, crossColumn);
+
+            // now we need to make alias in the translating column
+
+            CharSequence translatingAlias;
+            translatingAlias = createColumnAlias(baseAlias, translatingModel);
+
+            // add trackable expression to cursor model
+            cursorModel.addBottomUpColumn(queryColumnPool.next().of(baseAlias, node));
+
+            qc = queryColumnPool.next().of(translatingAlias, nextLiteral(baseAlias));
+            translatingModel.addBottomUpColumn(qc);
+
+        } else {
+            final CharSequence al = translatingModel.getColumnNameToAliasMap().get(qc.getAlias());
+            if (alias != null && !Chars.equals(al, alias)) {
+                QueryColumn existing = translatingModel.getAliasToColumnMap().get(alias);
+                if (existing == null) {
+                    // create new column
+                    qc = nextColumn(alias, al);
+                    translatingModel.addBottomUpColumn(qc);
+
+                    if (innerVirtualModel != null) {
+                        innerVirtualModel.addBottomUpColumn(qc);
+                    }
+
+                    return qc;
+                }
+
+                if (ExpressionNode.compareNodesExact(node, existing.getAst())) {
+                    return existing;
+                }
+
+                throw SqlException.invalidColumn(node.position, "duplicate alias");
+            }
+
+            // check if column is in inner virtual model as requested
+            qc = translatingModel.getAliasToColumnMap().get(al);
+        }
+        if (innerVirtualModel != null) {
+            innerVirtualModel.addBottomUpColumn(qc);
+        }
+        return qc;
     }
 
     private void addFilterOrEmitJoin(QueryModel parent, int idx, int ai, CharSequence an, ExpressionNode ao, int bi, CharSequence bn, ExpressionNode bo) {
@@ -255,7 +282,7 @@ class SqlOptimiser {
 
     private void addFunction(
             QueryColumn qc,
-            QueryModel baseModel,
+            QueryModel validatingModel,
             QueryModel translatingModel,
             QueryModel innerModel,
             QueryModel analyticModel,
@@ -275,7 +302,7 @@ class SqlOptimiser {
         final QueryColumn innerColumn = nextColumn(qc.getAlias());
 
         // pull literals only into translating model
-        emitLiterals(qc.getAst(), translatingModel, null, baseModel);
+        emitLiterals(qc.getAst(), translatingModel, null, validatingModel, false);
         groupByModel.addBottomUpColumn(innerColumn);
         analyticModel.addBottomUpColumn(innerColumn);
         outerModel.addBottomUpColumn(innerColumn);
@@ -443,18 +470,30 @@ class SqlOptimiser {
                         // single table reference
                         jc.slaveIndex = lhi;
                         addWhereNode(parent, lhi, node);
-                    } else {
+                    } else if (lhi < rhi) {
+                        // we must align "a" nodes with slave index
+                        // compiler will always be checking "a" columns
+                        // against metadata of the slave the context is assigned to
                         jc.aNodes.add(node.lhs);
                         jc.bNodes.add(node.rhs);
                         jc.aNames.add(literalCollectorANames.getQuick(0));
                         jc.bNames.add(literalCollectorBNames.getQuick(0));
                         jc.aIndexes.add(lhi);
                         jc.bIndexes.add(rhi);
-                        int max = Math.max(lhi, rhi);
-                        int min = Math.min(lhi, rhi);
-                        jc.slaveIndex = max;
-                        jc.parents.add(min);
-                        linkDependencies(parent, min, max);
+                        jc.slaveIndex = rhi;
+                        jc.parents.add(lhi);
+                        linkDependencies(parent, lhi, rhi);
+                    } else {
+                        jc.aNodes.add(node.rhs);
+                        jc.bNodes.add(node.lhs);
+                        jc.aNames.add(literalCollectorBNames.getQuick(0));
+                        jc.bNames.add(literalCollectorANames.getQuick(0));
+                        jc.aIndexes.add(rhi);
+                        jc.bIndexes.add(lhi);
+                        jc.slaveIndex = lhi;
+                        jc.parents.add(rhi);
+                        linkDependencies(parent, rhi, lhi);
+
                     }
                     addJoinContext(parent, jc);
                 } else if (bSize == 0
@@ -575,6 +614,8 @@ class SqlOptimiser {
         characterStore.clear();
         tablesSoFar.clear();
         clausesToSteal.clear();
+        tmpCursorAliases.clear();
+        functionsInFlight.clear();
     }
 
     private void collectAlias(QueryModel parent, int modelIndex, QueryModel model) throws SqlException {
@@ -656,13 +697,11 @@ class SqlOptimiser {
 
     // order hash is used to determine redundant order when parsing analytic function definition
     private void createOrderHash(QueryModel model) {
-        CharSequenceIntHashMap hash = model.getOrderHash();
+        LowerCaseCharSequenceIntHashMap hash = model.getOrderHash();
         hash.clear();
 
         final ObjList<ExpressionNode> orderBy = model.getOrderBy();
         final int n = orderBy.size();
-        final ObjList<QueryColumn> columns = model.getBottomUpColumns();
-        final int m = columns.size();
         final QueryModel nestedModel = model.getNestedModel();
 
         if (n > 0) {
@@ -674,21 +713,6 @@ class SqlOptimiser {
 
         if (nestedModel != null) {
             createOrderHash(nestedModel);
-            if (m > 0) {
-                CharSequenceIntHashMap thatHash = nestedModel.getOrderHash();
-                if (thatHash.size() > 0) {
-                    for (int i = 0; i < m; i++) {
-                        QueryColumn column = columns.getQuick(i);
-                        ExpressionNode node = column.getAst();
-                        if (node.type == ExpressionNode.LITERAL) {
-                            int direction = thatHash.get(node.token);
-                            if (direction != -1) {
-                                hash.put(column.getName(), direction);
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         final ObjList<QueryModel> joinModels = model.getJoinModels();
@@ -717,16 +741,20 @@ class SqlOptimiser {
         // taking into account that column is pre-aliased, e.g.
         // "col, col" will look like "col, col col1"
 
-        CharSequenceObjHashMap<CharSequence> translatingAliasMap = translatingModel.getColumnNameToAliasMap();
+        LowerCaseCharSequenceObjHashMap<CharSequence> translatingAliasMap = translatingModel.getColumnNameToAliasMap();
         int index = translatingAliasMap.keyIndex(columnAst.token);
         if (index < 0) {
             // column is already being referenced by translating model
             final CharSequence translatedColumnName = translatingAliasMap.valueAtQuick(index);
-            final CharSequence alias = createColumnAlias(columnName, groupByModel);
-            final QueryColumn translatedColumn = nextColumn(alias, translatedColumnName);
+            final CharSequence innerAlias = createColumnAlias(columnName, groupByModel);
+            final QueryColumn translatedColumn = nextColumn(innerAlias, translatedColumnName);
             innerModel.addBottomUpColumn(translatedColumn);
             groupByModel.addBottomUpColumn(translatedColumn);
-            analyticModel.addBottomUpColumn(translatedColumn);
+
+            // analytic model is used together with inner model
+            final CharSequence analyticAlias = createColumnAlias(innerAlias, analyticModel);
+            final QueryColumn analyticColumn = nextColumn(analyticAlias, innerAlias);
+            analyticModel.addBottomUpColumn(analyticColumn);
             outerModel.addBottomUpColumn(translatedColumn);
             distinctModel.addBottomUpColumn(translatedColumn);
         } else {
@@ -901,8 +929,45 @@ class SqlOptimiser {
         return cost;
     }
 
-    private ExpressionNode doReplaceLiteral(@Transient ExpressionNode node, QueryModel translatingModel, QueryModel innerModel, QueryModel validatingModel) throws SqlException {
-        final CharSequenceObjHashMap<CharSequence> map = translatingModel.getColumnNameToAliasMap();
+    private ExpressionNode doReplaceLiteral(
+            @Transient ExpressionNode node,
+            QueryModel translatingModel,
+            @Nullable QueryModel innerModel,
+            QueryModel validatingModel,
+            boolean analyticCall
+    ) throws SqlException {
+        if (analyticCall) {
+            assert innerModel != null;
+            ExpressionNode n = doReplaceLiteral0(node, translatingModel, null, validatingModel);
+            LowerCaseCharSequenceObjHashMap<CharSequence> map = innerModel.getColumnNameToAliasMap();
+            int index = map.keyIndex(n.token);
+            if (index > -1) {
+                // column is not referenced by inner model
+                CharSequence alias = createColumnAlias(n.token, innerModel);
+                innerModel.addBottomUpColumn(queryColumnPool.next().of(alias, n));
+                // when alias is not the same as token, e.g. column aliases as "token" is already on the list
+                // we have to create a new expression node that uses this alias
+                if (alias != n.token) {
+                    return nextLiteral(alias);
+                } else {
+                    return n;
+                }
+            } else {
+                // column is already referenced
+                return nextLiteral(map.valueAt(index));
+            }
+        }
+        return doReplaceLiteral0(node, translatingModel, innerModel, validatingModel);
+    }
+
+    private ExpressionNode doReplaceLiteral0(
+            ExpressionNode node,
+            QueryModel translatingModel,
+            @Nullable QueryModel innerModel,
+            QueryModel validatingModel
+    ) throws SqlException {
+
+        final LowerCaseCharSequenceObjHashMap<CharSequence> map = translatingModel.getColumnNameToAliasMap();
         int index = map.keyIndex(node.token);
         if (index > -1) {
             // there is a possibility that column references join table, but in a different way
@@ -967,8 +1032,9 @@ class SqlOptimiser {
         }
     }
 
-    private void emitAggregates(@Transient ExpressionNode node, QueryModel model) {
+    private boolean emitAggregates(@Transient ExpressionNode node, QueryModel model) {
 
+        boolean replaced = false;
         this.sqlNodeStack.clear();
 
         // pre-order iterative tree traversal
@@ -982,6 +1048,7 @@ class SqlOptimiser {
                     if (node.rhs == n) {
                         this.sqlNodeStack.push(node.rhs);
                     } else {
+                        replaced = true;
                         node.rhs = n;
                     }
                 }
@@ -990,6 +1057,7 @@ class SqlOptimiser {
                 if (n == node.lhs) {
                     node = node.lhs;
                 } else {
+                    replaced = true;
                     node.lhs = n;
                     node = null;
                 }
@@ -997,13 +1065,86 @@ class SqlOptimiser {
                 node = this.sqlNodeStack.poll();
             }
         }
+        return replaced;
+    }
+
+    private void emitColumnLiteralsTopDown(ObjList<QueryColumn> columns, QueryModel target) {
+        for (int i = 0, n = columns.size(); i < n; i++) {
+            final QueryColumn qc = columns.getQuick(i);
+            emitLiteralsTopDown(qc.getAst(), target);
+            if (qc instanceof AnalyticColumn) {
+                final AnalyticColumn ac = (AnalyticColumn) qc;
+                emitLiteralsTopDown(ac.getPartitionBy(), target);
+                emitLiteralsTopDown(ac.getOrderBy(), target);
+            }
+        }
+    }
+
+    // This method will create CROSS join models in the "baseModel" for all unique cursor
+    // function it finds on the node. The "translatingModel" is used to ensure uniqueness
+    private boolean emitCursors(
+            @Transient ExpressionNode node,
+            QueryModel cursorModel,
+            @Nullable QueryModel innerVirtualModel,
+            QueryModel translatingModel,
+            QueryModel baseModel,
+            SqlExecutionContext sqlExecutionContext
+    ) throws SqlException {
+
+        boolean replaced = false;
+        this.sqlNodeStack.clear();
+
+        // pre-order iterative tree traversal
+        // see: http://en.wikipedia.org/wiki/Tree_traversal
+
+        while (!this.sqlNodeStack.isEmpty() || node != null) {
+            if (node != null) {
+
+                if (node.rhs != null) {
+                    final ExpressionNode n = replaceIfCursor(
+                            node.rhs,
+                            cursorModel,
+                            innerVirtualModel,
+                            translatingModel,
+                            baseModel,
+                            sqlExecutionContext
+                    );
+                    if (node.rhs == n) {
+                        this.sqlNodeStack.push(node.rhs);
+                    } else {
+                        node.rhs = n;
+                        replaced = true;
+                    }
+                }
+
+                final ExpressionNode n = replaceIfCursor(
+                        node.lhs,
+                        cursorModel,
+                        innerVirtualModel,
+                        translatingModel,
+                        baseModel,
+                        sqlExecutionContext
+                );
+                if (n == node.lhs) {
+                    node = node.lhs;
+                } else {
+                    node.lhs = n;
+                    node = null;
+                    replaced = true;
+                }
+            } else {
+                node = this.sqlNodeStack.poll();
+            }
+        }
+        return replaced;
     }
 
     private void emitLiterals(
             @Transient ExpressionNode node,
             QueryModel translatingModel,
             QueryModel innerModel,
-            QueryModel validatingModel
+            QueryModel validatingModel,
+            boolean analyticCall
     ) throws SqlException {
 
         this.sqlNodeStack.clear();
@@ -1015,7 +1156,7 @@ class SqlOptimiser {
             if (node != null) {
                 if (node.paramCount < 3) {
                     if (node.rhs != null) {
-                        ExpressionNode n = replaceLiteral(node.rhs, translatingModel, innerModel, validatingModel);
+                        ExpressionNode n = replaceLiteral(node.rhs, translatingModel, innerModel, validatingModel, analyticCall);
                         if (node.rhs == n) {
                             this.sqlNodeStack.push(node.rhs);
                         } else {
@@ -1023,7 +1164,7 @@ class SqlOptimiser {
                         }
                     }
 
-                    ExpressionNode n = replaceLiteral(node.lhs, translatingModel, innerModel, validatingModel);
+                    ExpressionNode n = replaceLiteral(node.lhs, translatingModel, innerModel, validatingModel, analyticCall);
                     if (n == node.lhs) {
                         node = node.lhs;
                     } else {
@@ -1033,7 +1174,7 @@ class SqlOptimiser {
                 } else {
                     for (int i = 1, k = node.paramCount; i < k; i++) {
                         ExpressionNode e = node.args.getQuick(i);
-                        ExpressionNode n = replaceLiteral(e, translatingModel, innerModel, validatingModel);
+                        ExpressionNode n = replaceLiteral(e, translatingModel, innerModel, validatingModel, analyticCall);
                         if (e == n) {
                             this.sqlNodeStack.push(e);
                         } else {
@@ -1042,7 +1183,7 @@ class SqlOptimiser {
                     }
 
                     ExpressionNode e = node.args.getQuick(0);
-                    ExpressionNode n = replaceLiteral(e, translatingModel, innerModel, validatingModel);
+                    ExpressionNode n = replaceLiteral(e, translatingModel, innerModel, validatingModel, analyticCall);
                     if (e == n) {
                         node = e;
                     } else {
@@ -1093,6 +1234,20 @@ class SqlOptimiser {
         }
     }
 
+    private void emitLiteralsTopDown(ObjList<ExpressionNode> list, QueryModel nested) {
+        for (int i = 0, m = list.size(); i < m; i++) {
+            emitLiteralsTopDown(list.getQuick(i), nested);
+        }
+    }
+
+    private QueryColumn ensureAliasUniqueness(QueryModel groupByModel, QueryColumn qc) {
+        CharSequence alias = createColumnAlias(qc.getAlias(), groupByModel);
+        if (alias != qc.getAlias()) {
+            qc = queryColumnPool.next().of(alias, qc.getAst());
+        }
+        return qc;
+    }
+
     private void enumerateTableColumns(QueryModel model, SqlExecutionContext executionContext) throws SqlException {
         final ObjList<QueryModel> jm = model.getJoinModels();
 
@@ -1106,11 +1261,12 @@ class SqlOptimiser {
                 openReaderAndEnumerateColumns(executionContext, model);
             }
         } else {
-            if (model.getNestedModel() != null) {
-                enumerateTableColumns(model.getNestedModel(), executionContext);
+            final QueryModel nested = model.getNestedModel();
+            if (nested != null) {
+                enumerateTableColumns(nested, executionContext);
                 // copy columns of nested model onto parent one
                 // we must treat sub-query just like we do a table
-                model.copyColumnsFrom(model.getNestedModel());
+                model.copyColumnsFrom(nested, queryColumnPool, expressionNodePool);
             }
         }
         for (int i = 1, n = jm.size(); i < n; i++) {
@@ -1155,41 +1311,6 @@ class SqlOptimiser {
         }
     }
 
-    private int getIndexOfTableForColumn(QueryModel model, CharSequence column, int dot, int position) throws SqlException {
-        ObjList<QueryModel> joinModels = model.getJoinModels();
-        int index = -1;
-        if (dot == -1) {
-            for (int i = 0, n = joinModels.size(); i < n; i++) {
-                if (joinModels.getQuick(i).getAliasToColumnMap().excludes(column)) {
-                    continue;
-                }
-
-                if (index != -1) {
-                    throw SqlException.ambiguousColumn(position);
-                }
-
-                index = i;
-            }
-
-            if (index == -1) {
-                throw SqlException.invalidColumn(position, column);
-            }
-
-        } else {
-            index = model.getAliasIndex(column, 0, dot);
-
-            if (index == -1) {
-                throw SqlException.$(position, "Invalid table name or alias");
-            }
-
-            if (joinModels.getQuick(index).getAliasToColumnMap().excludes(column, dot + 1, column.length())) {
-                throw SqlException.invalidColumn(position, column);
-            }
-
-        }
-        return index;
-    }
-
     private ObjList<ExpressionNode> getOrderByAdvice(QueryModel model) {
         orderByAdvice.clear();
         final ObjList<ExpressionNode> orderBy = model.getOrderBy();
@@ -1198,11 +1319,11 @@ class SqlOptimiser {
             return orderByAdvice;
         }
 
-        CharSequenceObjHashMap<QueryColumn> map = model.getAliasToColumnMap();
+        LowerCaseCharSequenceObjHashMap<QueryColumn> map = model.getAliasToColumnMap();
         for (int i = 0; i < len; i++) {
             QueryColumn queryColumn = map.get(orderBy.getQuick(i).token);
             if (queryColumn.getAst().type == ExpressionNode.LITERAL) {
-                orderByAdvice.add(nextLiteral(queryColumn.getAst().token));
+                orderByAdvice.add(queryColumn.getAst());
             } else {
                 orderByAdvice.clear();
                 break;
@@ -1473,7 +1594,7 @@ class SqlOptimiser {
                         int tableExpressionReference = literalCollectorAIndexes.getQuick(j);
                         int position = tempList.binarySearch(tableExpressionReference);
                         if (position < 0) {
-                            tempList.add(-(position + 1), tableExpressionReference);
+                            tempList.insert(-(position + 1), tableExpressionReference);
                         }
                     }
 
@@ -1631,102 +1752,115 @@ class SqlOptimiser {
         }
     }
 
-    QueryModel optimise(QueryModel model, SqlExecutionContext executionContext) throws SqlException {
-        optimiseExpressionModels(model, executionContext);
-        enumerateTableColumns(model, executionContext);
-        resolveJoinColumns(model);
-        optimiseBooleanNot(model);
-        final QueryModel rewrittenModel = rewriteOrderBy(
-                rewriteOrderByPositionForUnionModels(
-                        rewriteOrderByPosition(
-                                rewriteSelectClause(
-                                        model, true
-                                )
-                        )
-                )
-        );
-        optimiseOrderBy(rewrittenModel, OrderByMnemonic.ORDER_BY_UNKNOWN);
-        createOrderHash(rewrittenModel);
-        optimiseJoins(rewrittenModel);
-        moveWhereInsideSubQueries(rewrittenModel);
-        eraseColumnPrefixInWhereClauses(rewrittenModel);
-        moveTimestampToChooseModel(rewrittenModel);
-        propagateTopDownColumns(rewrittenModel, true, null);
-        return rewrittenModel;
+    QueryModel optimise(QueryModel model, SqlExecutionContext sqlExecutionContext) throws SqlException {
+        final QueryModel rewrittenModel;
+        try {
+            optimiseExpressionModels(model, sqlExecutionContext);
+            enumerateTableColumns(model, sqlExecutionContext);
+            resolveJoinColumns(model);
+            optimiseBooleanNot(model);
+            rewrittenModel = rewriteOrderBy(
+                    rewriteOrderByPositionForUnionModels(
+                            rewriteOrderByPosition(
+                                    rewriteSelectClause(
+                                            model,
+                                            true,
+                                            sqlExecutionContext
+                                    )
+                            )
+                    )
+            );
+            optimiseOrderBy(rewrittenModel, OrderByMnemonic.ORDER_BY_UNKNOWN);
+            createOrderHash(rewrittenModel);
+            optimiseJoins(rewrittenModel);
+            moveWhereInsideSubQueries(rewrittenModel);
+            eraseColumnPrefixInWhereClauses(rewrittenModel);
+            moveTimestampToChooseModel(rewrittenModel);
+            propagateTopDownColumns(rewrittenModel);
+            return rewrittenModel;
+        } catch (SqlException e) {
+            // at this point models may have functions than need to be freed
+            Misc.freeObjList(functionsInFlight);
+            functionsInFlight.clear();
+            throw e;
+        }
     }
 
     private ExpressionNode optimiseBooleanNot(final ExpressionNode node, boolean reverse) {
-        switch (notOps.get(node.token)) {
-            case NOT_OP_NOT:
-                if (reverse) {
-                    return optimiseBooleanNot(node.rhs, false);
-                } else {
-                    switch (node.rhs.type) {
-                        case ExpressionNode.LITERAL:
-                        case ExpressionNode.CONSTANT:
-                            return node;
-                        default:
-                            return optimiseBooleanNot(node.rhs, true);
+        if (node.token != null) {
+            switch (notOps.get(node.token)) {
+                case NOT_OP_NOT:
+                    if (reverse) {
+                        return optimiseBooleanNot(node.rhs, false);
+                    } else {
+                        switch (node.rhs.type) {
+                            case ExpressionNode.LITERAL:
+                            case ExpressionNode.CONSTANT:
+                                break;
+                            default:
+                                return optimiseBooleanNot(node.rhs, true);
+                        }
                     }
-                }
-            case NOT_OP_AND:
-                if (reverse) {
-                    node.token = "or";
-                }
-                node.lhs = optimiseBooleanNot(node.lhs, reverse);
-                node.rhs = optimiseBooleanNot(node.rhs, reverse);
-                return node;
-            case NOT_OP_OR:
-                if (reverse) {
-                    node.token = "and";
-                }
-                node.lhs = optimiseBooleanNot(node.lhs, reverse);
-                node.rhs = optimiseBooleanNot(node.rhs, reverse);
-                return node;
-            case NOT_OP_GREATER:
-                if (reverse) {
-                    node.token = "<=";
-                }
-                return node;
-            case NOT_OP_GREATER_EQ:
-                if (reverse) {
-                    node.token = "<";
-                }
-                return node;
-
-            case NOT_OP_LESS:
-                if (reverse) {
-                    node.token = ">=";
-                }
-                return node;
-            case NOT_OP_LESS_EQ:
-                if (reverse) {
-                    node.token = ">";
-                }
-                return node;
-            case NOT_OP_EQUAL:
-                if (reverse) {
-                    node.token = "!=";
-                }
-                return node;
-            case NOT_OP_NOT_EQ:
-                if (reverse) {
-                    node.token = "=";
-                } else {
-                    node.token = "!=";
-                }
-                return node;
-            default:
-                if (reverse) {
-                    ExpressionNode n = expressionNodePool.next();
-                    n.token = "not";
-                    n.paramCount = 1;
-                    n.rhs = node;
-                    n.type = ExpressionNode.OPERATION;
-                    return n;
-                }
-                return node;
+                    break;
+                case NOT_OP_AND:
+                    if (reverse) {
+                        node.token = "or";
+                    }
+                    node.lhs = optimiseBooleanNot(node.lhs, reverse);
+                    node.rhs = optimiseBooleanNot(node.rhs, reverse);
+                    break;
+                case NOT_OP_OR:
+                    if (reverse) {
+                        node.token = "and";
+                    }
+                    node.lhs = optimiseBooleanNot(node.lhs, reverse);
+                    node.rhs = optimiseBooleanNot(node.rhs, reverse);
+                    break;
+                case NOT_OP_GREATER:
+                    if (reverse) {
+                        node.token = "<=";
+                    }
+                    break;
+                case NOT_OP_GREATER_EQ:
+                    if (reverse) {
+                        node.token = "<";
+                    }
+                    break;
+                case NOT_OP_LESS:
+                    if (reverse) {
+                        node.token = ">=";
+                    }
+                    break;
+                case NOT_OP_LESS_EQ:
+                    if (reverse) {
+                        node.token = ">";
+                    }
+                    break;
+                case NOT_OP_EQUAL:
+                    if (reverse) {
+                        node.token = "!=";
+                    }
+                    break;
+                case NOT_OP_NOT_EQ:
+                    if (reverse) {
+                        node.token = "=";
+                    } else {
+                        node.token = "!=";
+                    }
+                    break;
+                default:
+                    if (reverse) {
+                        ExpressionNode n = expressionNodePool.next();
+                        n.token = "not";
+                        n.paramCount = 1;
+                        n.rhs = node;
+                        n.type = ExpressionNode.OPERATION;
+                        return n;
+                    }
+                    break;
+            }
         }
+        return node;
     }
 
     private void optimiseBooleanNot(QueryModel model) {
@@ -1899,12 +2033,13 @@ class SqlOptimiser {
 
     private void parseFunctionAndEnumerateColumns(@NotNull QueryModel model, @NotNull SqlExecutionContext executionContext) throws SqlException {
         assert model.getTableNameFunction() == null;
-        Function function = functionParser.parseFunction(model.getTableName(), EmptyRecordMetadata.INSTANCE, executionContext);
-        if (function.getType() != TypeEx.CURSOR) {
+        final Function function = functionParser.parseFunction(model.getTableName(), AnyRecordMetadata.INSTANCE, executionContext);
+        if (function.getType() != ColumnType.CURSOR) {
             throw SqlException.$(model.getTableName().position, "function must return CURSOR");
         }
         model.setTableNameFunction(function);
-        copyColumnsFromMetadata(model, function.getMetadata());
+        functionsInFlight.add(function);
+        copyColumnsFromMetadata(model, function.getRecordCursorFactory().getMetadata());
     }
 
     private void processEmittedJoinClauses(QueryModel model) {
@@ -1993,26 +2128,21 @@ class SqlOptimiser {
         parent.addParsedWhereNode(node);
     }
 
-    private void propagateTopDownColumns(QueryModel model, boolean topLevel, @Nullable QueryModel papaModel) {
+    private void propagateTopDownColumns(QueryModel model) {
+        propagateTopDownColumns0(model, true, null);
+    }
+
+    private void propagateTopDownColumns0(QueryModel model, boolean topLevel, @Nullable QueryModel papaModel) {
 
         // skip over NONE model that does not have table name
         final QueryModel nested = skipNoneTypeModels(model.getNestedModel());
+        model.setNestedModel(nested);
         final boolean nestedIsFlex = modelIsFlex(nested);
-
-        if (nestedIsFlex) {
-            final ObjList<QueryColumn> columns = model.getColumns();
-            for (int i = 0, n = columns.size(); i < n; i++) {
-                emitLiteralsTopDown(columns.getQuick(i).getAst(), nested);
-            }
-        }
 
         final QueryModel union = skipNoneTypeModels(model.getUnionModel());
 
         if (modelIsFlex(union)) {
-            final ObjList<QueryColumn> columns = model.getColumns();
-            for (int i = 0, n = columns.size(); i < n; i++) {
-                emitLiteralsTopDown(columns.getQuick(i).getAst(), union);
-            }
+            emitColumnLiteralsTopDown(model.getColumns(), union);
         }
 
         // process join models and their join conditions
@@ -2032,7 +2162,7 @@ class SqlOptimiser {
                     }
                 }
             }
-            propagateTopDownColumns(jm, false, model);
+            propagateTopDownColumns0(jm, false, model);
 
             // process post-join-where
             final ExpressionNode postJoinWhere = jm.getPostJoinWhereClause();
@@ -2042,15 +2172,8 @@ class SqlOptimiser {
             }
         }
 
-
         // latest by
-        final ObjList<ExpressionNode> latestBy = model.getLatestBy();
-        final int latestBySize = latestBy.size();
-        if (latestBySize > 0) {
-            for (int i = 0; i < latestBySize; i++) {
-                emitLiteralsTopDown(latestBy.getQuick(i), model);
-            }
-        }
+        emitLiteralsTopDown(model.getLatestBy(), model);
 
         // propagate explicit timestamp declaration
         if (model.getTimestamp() != null && nestedIsFlex) {
@@ -2060,27 +2183,28 @@ class SqlOptimiser {
         // where clause
         if (model.getWhereClause() != null) {
             emitLiteralsTopDown(model.getWhereClause(), model);
+            if (nested != null) {
+                emitLiteralsTopDown(model.getWhereClause(), nested);
+            }
         }
 
         // propagate 'order by'
         if (!topLevel) {
-            final ObjList<ExpressionNode> orderBy = model.getOrderBy();
-            final int orderBySize = orderBy.size();
-            if (orderBySize > 0) {
-                for (int i = 0; i < orderBySize; i++) {
-                    emitLiteralsTopDown(orderBy.getQuick(i), model);
-                }
-            }
+            emitLiteralsTopDown(model.getOrderBy(), model);
+        }
+
+        if (nestedIsFlex) {
+            emitColumnLiteralsTopDown(model.getColumns(), nested);
         }
 
         // go down the nested path
         if (nested != null) {
-            propagateTopDownColumns(nested, false, null);
+            propagateTopDownColumns0(nested, false, null);
         }
 
         final QueryModel unionModel = model.getUnionModel();
         if (unionModel != null) {
-            propagateTopDownColumns(unionModel, true, null);
+            propagateTopDownColumns(unionModel);
         }
     }
 
@@ -2139,9 +2263,36 @@ class SqlOptimiser {
 
     private ExpressionNode replaceIfAggregate(@Transient ExpressionNode node, QueryModel model) {
         if (node != null && functionParser.isGroupBy(node.token)) {
-            QueryColumn c = queryColumnPool.next().of(createColumnAlias(node, model), node);
-            model.addBottomUpColumn(c);
+            QueryColumn c = model.findBottomUpColumnByAst(node);
+            if (c == null) {
+                c = queryColumnPool.next().of(createColumnAlias(node, model), node);
+                model.addBottomUpColumn(c);
+            }
             return nextLiteral(c.getAlias());
+        }
+        return node;
+    }
+
+    private ExpressionNode replaceIfCursor(
+            @Transient ExpressionNode node,
+            QueryModel cursorModel,
+            @Nullable QueryModel innerVirtualModel,
+            QueryModel translatingModel,
+            QueryModel baseModel,
+            SqlExecutionContext sqlExecutionContext
+    ) throws SqlException {
+        if (node != null && functionParser.isCursor(node.token)) {
+            return nextLiteral(
+                    addCursorFunctionAsCrossJoin(
+                            node,
+                            null,
+                            cursorModel,
+                            innerVirtualModel,
+                            translatingModel,
+                            baseModel,
+                            sqlExecutionContext
+                    ).getAlias()
+            );
         }
         return node;
     }
@@ -2149,10 +2300,22 @@ class SqlOptimiser {
     private ExpressionNode replaceLiteral(
             @Transient ExpressionNode node,
             QueryModel translatingModel,
-            QueryModel innerModel,
-            QueryModel validatingModel
+            @Nullable QueryModel innerModel,
+            QueryModel validatingModel,
+            boolean analyticCall
     ) throws SqlException {
-        return node != null && node.type == ExpressionNode.LITERAL ? doReplaceLiteral(node, translatingModel, innerModel, validatingModel) : node;
+        if (node != null && node.type == ExpressionNode.LITERAL) {
+            return doReplaceLiteral(node, translatingModel, innerModel, validatingModel, analyticCall);
+        }
+        return node;
+    }
+
+    private void replaceLiteralList(QueryModel innerVirtualModel, QueryModel translatingModel, QueryModel baseModel, ObjList<ExpressionNode> list) throws SqlException {
+        for (int j = 0, n = list.size(); j < n; j++) {
+            final ExpressionNode node = list.getQuick(j);
+            emitLiterals(node, translatingModel, innerVirtualModel, baseModel, true);
+            list.setQuick(j, replaceLiteral(node, translatingModel, innerVirtualModel, baseModel, true));
+        }
     }
 
     private void resolveJoinColumns(QueryModel model) throws SqlException {
@@ -2246,17 +2409,13 @@ class SqlOptimiser {
                 // is this a table reference?
                 if (dot > -1 || model.getAliasToColumnMap().excludes(column)) {
                     // validate column
-                    int indexOfTableForColumn = getIndexOfTableForColumn(base, column, dot, orderBy.position);
-                    if (dot < 0 && baseParent.getAliasToColumnNameMap().get(base.getBottomUpColumnNames().get(indexOfTableForColumn)) == null) {
-                        throw SqlException.invalidColumn(orderBy.position, column);
-                    }
-
+                    validateColumnAndGetModelIndex(base, column, dot, orderBy.position);
                     // good news, our column matched base model
                     // this condition is to ignore order by columns that are not in select and behind group by
                     if (ascendColumns && base != model) {
                         // check if column is aliased as either
                         // "x y" or "tab.x y" or "t.x y", where "t" is alias of table "tab"
-                        final CharSequenceObjHashMap<CharSequence> map = baseParent.getColumnNameToAliasMap();
+                        final LowerCaseCharSequenceObjHashMap<CharSequence> map = baseParent.getColumnNameToAliasMap();
                         CharSequence alias = null;
                         int index = map.keyIndex(column);
                         if (index > -1 && dot > -1) {
@@ -2289,7 +2448,7 @@ class SqlOptimiser {
                                     for (int j = 0, z = baseParent.getBottomUpColumns().size(); j < z; j++) {
                                         QueryColumn qc = baseParent.getBottomUpColumns().getQuick(j);
                                         if (qc.getAst().type == ExpressionNode.FUNCTION || qc.getAst().type == ExpressionNode.OPERATION) {
-                                            emitLiterals(qc.getAst(), synthetic, null, baseParent.getNestedModel());
+                                            emitLiterals(qc.getAst(), synthetic, null, baseParent.getNestedModel(), false);
                                         } else {
                                             synthetic.addBottomUpColumn(qc);
                                         }
@@ -2450,10 +2609,10 @@ class SqlOptimiser {
     }
 
     // flatParent = true means that parent model does not have selected columns
-    private QueryModel rewriteSelectClause(QueryModel model, boolean flatParent) throws SqlException {
+    private QueryModel rewriteSelectClause(QueryModel model, boolean flatParent, SqlExecutionContext sqlExecutionContext) throws SqlException {
 
         if (model.getUnionModel() != null) {
-            QueryModel rewrittenUnionModel = rewriteSelectClause(model.getUnionModel(), true);
+            QueryModel rewrittenUnionModel = rewriteSelectClause(model.getUnionModel(), true, sqlExecutionContext);
             if (rewrittenUnionModel != model.getUnionModel()) {
                 model.setUnionModel(rewrittenUnionModel);
             }
@@ -2465,20 +2624,20 @@ class SqlOptimiser {
             final boolean flatModel = m.getBottomUpColumns().size() == 0;
             final QueryModel nestedModel = m.getNestedModel();
             if (nestedModel != null) {
-                QueryModel rewritten = rewriteSelectClause(nestedModel, flatModel);
+                QueryModel rewritten = rewriteSelectClause(nestedModel, flatModel, sqlExecutionContext);
                 if (rewritten != nestedModel) {
                     m.setNestedModel(rewritten);
                     // since we have rewritten nested model we also have to update column hash
-                    m.copyColumnsFrom(rewritten);
+                    m.copyColumnsFrom(rewritten, queryColumnPool, expressionNodePool);
                 }
             }
 
             if (flatModel) {
                 if (flatParent && m.getSampleBy() != null) {
-                    throw SqlException.$(m.getSampleBy().position, "'sample by' must be used with 'select' clause, which contains aggerate expression(s)");
+                    throw SqlException.$(m.getSampleBy().position, "'sample by' must be used with 'select' clause, which contains aggregate expression(s)");
                 }
             } else {
-                model.replaceJoinModel(i, rewriteSelectClause0(m));
+                model.replaceJoinModel(i, rewriteSelectClause0(m, sqlExecutionContext));
             }
         }
 
@@ -2487,21 +2646,27 @@ class SqlOptimiser {
     }
 
     @NotNull
-    private QueryModel rewriteSelectClause0(QueryModel model) throws SqlException {
+    private QueryModel rewriteSelectClause0(QueryModel model, SqlExecutionContext sqlExecutionContext) throws SqlException {
         assert model.getNestedModel() != null;
 
-        QueryModel groupByModel = queryModelPool.next();
+        final QueryModel groupByModel = queryModelPool.next();
         groupByModel.setSelectModelType(QueryModel.SELECT_MODEL_GROUP_BY);
-        QueryModel distinctModel = queryModelPool.next();
+        final QueryModel distinctModel = queryModelPool.next();
         distinctModel.setSelectModelType(QueryModel.SELECT_MODEL_DISTINCT);
-        QueryModel outerModel = queryModelPool.next();
-        outerModel.setSelectModelType(QueryModel.SELECT_MODEL_VIRTUAL);
-        QueryModel innerModel = queryModelPool.next();
-        innerModel.setSelectModelType(QueryModel.SELECT_MODEL_VIRTUAL);
-        QueryModel analyticModel = queryModelPool.next();
+        final QueryModel outerVirtualModel = queryModelPool.next();
+        outerVirtualModel.setSelectModelType(QueryModel.SELECT_MODEL_VIRTUAL);
+        final QueryModel innerVirtualModel = queryModelPool.next();
+        innerVirtualModel.setSelectModelType(QueryModel.SELECT_MODEL_VIRTUAL);
+        final QueryModel analyticModel = queryModelPool.next();
         analyticModel.setSelectModelType(QueryModel.SELECT_MODEL_ANALYTIC);
-        QueryModel translatingModel = queryModelPool.next();
+        final QueryModel translatingModel = queryModelPool.next();
         translatingModel.setSelectModelType(QueryModel.SELECT_MODEL_CHOOSE);
+        final QueryModel analyticTranslatingModel = queryModelPool.next();
+        analyticTranslatingModel.setSelectModelType(QueryModel.SELECT_MODEL_CHOOSE);
+        // this is dangling model, which isn't chained with any other
+        // we use it to ensure expression and alias uniqueness
+        final QueryModel cursorModel = queryModelPool.next();
+
         boolean useInnerModel = false;
         boolean useAnalyticModel = false;
         boolean useGroupByModel = false;
@@ -2523,6 +2688,9 @@ class SqlOptimiser {
             groupByModel.moveGroupByFrom(baseModel);
         }
 
+        // cursor model should have all columns that base model has to properly resolve duplicate names
+        cursorModel.getAliasToColumnMap().putAll(baseModel.getAliasToColumnMap());
+
         // create virtual columns from select list
         for (int i = 0, k = columns.size(); i < k; i++) {
             QueryColumn qc = columns.getQuick(i);
@@ -2534,15 +2702,16 @@ class SqlOptimiser {
             }
 
             if (qc.getAst().type == ExpressionNode.LITERAL) {
-                if (!isNotBindVariable(qc.getAst().token)) {
+                if (!SqlUtil.isNotBindVariable(qc.getAst().token)) {
+                    // bind variable
                     addFunction(
                             qc,
                             baseModel,
                             translatingModel,
-                            innerModel,
+                            innerVirtualModel,
                             analyticModel,
                             groupByModel,
-                            outerModel,
+                            outerVirtualModel,
                             distinctModel
                     );
                     useInnerModel = true;
@@ -2555,10 +2724,10 @@ class SqlOptimiser {
                             hasJoins,
                             baseModel,
                             translatingModel,
-                            innerModel,
+                            innerVirtualModel,
                             analyticModel,
                             groupByModel,
-                            outerModel,
+                            outerVirtualModel,
                             distinctModel
                     );
                 } else {
@@ -2567,10 +2736,10 @@ class SqlOptimiser {
                             qc.getAst(),
                             baseModel,
                             translatingModel,
-                            innerModel,
+                            innerVirtualModel,
                             analyticModel,
                             groupByModel,
-                            outerModel,
+                            outerVirtualModel,
                             distinctModel
                     );
                 }
@@ -2580,27 +2749,48 @@ class SqlOptimiser {
                 // we can add it to group-by model right away
                 if (qc.getAst().type == ExpressionNode.FUNCTION) {
                     if (analytic) {
-                        analyticModel.addBottomUpColumn(qc);
 
+                        // Analytic model can be after either translation model directly
+                        // or after inner virtual model, which can be sandwiched between
+                        // translation model and analytic model.
+                        // To make sure columns, referenced by the analytic model
+                        // are rendered correctly we will emit them into a dedicated
+                        // translation model for the analytic model.
+                        // When we able to determine which combination of models precedes the
+                        // analytic model, we can copy columns from analytic_translation model to
+                        // either only to translation model or both translation model and the
+                        // inner virtual models
+                        analyticModel.addBottomUpColumn(qc);
                         // ensure literals referenced by analytic column are present in nested models
-                        emitLiterals(qc.getAst(), translatingModel, innerModel, baseModel);
+                        emitLiterals(qc.getAst(), translatingModel, innerVirtualModel, baseModel, true);
+                        final AnalyticColumn ac = (AnalyticColumn) qc;
+                        replaceLiteralList(innerVirtualModel, translatingModel, baseModel, ac.getPartitionBy());
+                        replaceLiteralList(innerVirtualModel, translatingModel, baseModel, ac.getOrderBy());
                         useAnalyticModel = true;
                         continue;
                     } else if (functionParser.isGroupBy(qc.getAst().token)) {
-                        CharSequence alias = createColumnAlias(qc.getAlias(), groupByModel);
-                        if (alias != qc.getAlias()) {
-                            qc = queryColumnPool.next().of(alias, qc.getAst());
-                        }
+                        qc = ensureAliasUniqueness(groupByModel, qc);
                         groupByModel.addBottomUpColumn(qc);
                         // group-by column references might be needed when we have
                         // outer model supporting arithmetic such as:
                         // select sum(a)+sum(b) ....
-                        QueryColumn aggregateRef = nextColumn(qc.getAlias());
-                        outerModel.addBottomUpColumn(aggregateRef);
-                        distinctModel.addBottomUpColumn(aggregateRef);
+                        QueryColumn ref = nextColumn(qc.getAlias());
+                        outerVirtualModel.addBottomUpColumn(ref);
+                        distinctModel.addBottomUpColumn(ref);
                         // pull out literals
-                        emitLiterals(qc.getAst(), translatingModel, innerModel, baseModel);
+                        emitLiterals(qc.getAst(), translatingModel, innerVirtualModel, baseModel, false);
                         useGroupByModel = true;
+                        continue;
+                    } else if (functionParser.isCursor(qc.getAst().token)) {
+                        addCursorFunctionAsCrossJoin(
+                                qc.getAst(),
+                                qc.getAlias(),
+                                cursorModel,
+                                innerVirtualModel,
+                                translatingModel,
+                                baseModel,
+                                sqlExecutionContext
+                        );
                         continue;
                     }
                 }
@@ -2608,28 +2798,32 @@ class SqlOptimiser {
                 // this is not a direct call to aggregation function, in which case
                 // we emit aggregation function into group-by model and leave the
                 // rest in outer model
-                int beforeSplit = groupByModel.getBottomUpColumns().size();
-                emitAggregates(qc.getAst(), groupByModel);
-                if (beforeSplit < groupByModel.getBottomUpColumns().size()) {
-                    outerModel.addBottomUpColumn(qc);
+                final int beforeSplit = groupByModel.getBottomUpColumns().size();
+                if (emitAggregates(qc.getAst(), groupByModel)) {
+                    emitCursors(qc.getAst(), cursorModel, innerVirtualModel, translatingModel, baseModel, sqlExecutionContext);
+                    qc = ensureAliasUniqueness(outerVirtualModel, qc);
+                    outerVirtualModel.addBottomUpColumn(qc);
                     distinctModel.addBottomUpColumn(nextColumn(qc.getAlias()));
 
                     // pull literals from newly created group-by columns into both of underlying models
                     for (int j = beforeSplit, n = groupByModel.getBottomUpColumns().size(); j < n; j++) {
-                        emitLiterals(groupByModel.getBottomUpColumns().getQuick(i).getAst(), translatingModel, innerModel, baseModel);
+                        emitLiterals(groupByModel.getBottomUpColumns().getQuick(i).getAst(), translatingModel, innerVirtualModel, baseModel, false);
                     }
 
                     useGroupByModel = true;
                     useOuterModel = true;
                 } else {
+                    if (emitCursors(qc.getAst(), cursorModel, null, translatingModel, baseModel, sqlExecutionContext)) {
+                        qc = ensureAliasUniqueness(innerVirtualModel, qc);
+                    }
                     addFunction(
                             qc,
                             baseModel,
                             translatingModel,
-                            innerModel,
+                            innerVirtualModel,
                             analyticModel,
                             groupByModel,
-                            outerModel,
+                            outerVirtualModel,
                             distinctModel
                     );
                     useInnerModel = true;
@@ -2644,12 +2838,13 @@ class SqlOptimiser {
 
         // check if translating model is redundant, e.g.
         // that it neither chooses between tables nor renames columns
-        boolean translationIsRedundant = useInnerModel || useGroupByModel || useAnalyticModel;
+        boolean translationIsRedundant = /*cursorModel.getBottomUpColumns().size() == 0 &&*/ (useInnerModel || useGroupByModel || useAnalyticModel);
         if (translationIsRedundant) {
             for (int i = 0, n = translatingModel.getBottomUpColumns().size(); i < n; i++) {
                 QueryColumn column = translatingModel.getBottomUpColumns().getQuick(i);
                 if (!column.getAst().token.equals(column.getAlias())) {
                     translationIsRedundant = false;
+                    break;
                 }
             }
         }
@@ -2665,39 +2860,43 @@ class SqlOptimiser {
             limitSource = translatingModel;
             translatingModel.setNestedModel(baseModel);
             translatingModel.moveLimitFrom(model);
+            translatingModel.moveAliasFrom(model);
         }
 
         if (useInnerModel) {
-            innerModel.setNestedModel(root);
-            innerModel.moveLimitFrom(limitSource);
-            root = innerModel;
-            limitSource = innerModel;
+            innerVirtualModel.setNestedModel(root);
+            innerVirtualModel.moveLimitFrom(limitSource);
+            innerVirtualModel.moveAliasFrom(limitSource);
+            root = innerVirtualModel;
+            limitSource = innerVirtualModel;
         }
 
         if (useAnalyticModel) {
             analyticModel.setNestedModel(root);
             analyticModel.moveLimitFrom(limitSource);
+            analyticModel.moveAliasFrom(limitSource);
             root = analyticModel;
             limitSource = analyticModel;
         } else if (useGroupByModel) {
             groupByModel.setNestedModel(root);
             groupByModel.moveLimitFrom(limitSource);
+            groupByModel.moveAliasFrom(limitSource);
             root = groupByModel;
             limitSource = groupByModel;
-            if (useOuterModel) {
-                outerModel.setNestedModel(root);
-                outerModel.moveLimitFrom(limitSource);
-                root = outerModel;
-                limitSource = outerModel;
-            }
         }
 
-        if (root != outerModel && root.getBottomUpColumns().size() < outerModel.getBottomUpColumns().size()) {
-            outerModel.setNestedModel(root);
-            outerModel.moveLimitFrom(limitSource);
+        if (useOuterModel) {
+            outerVirtualModel.setNestedModel(root);
+            outerVirtualModel.moveLimitFrom(limitSource);
+            outerVirtualModel.moveAliasFrom(limitSource);
+            root = outerVirtualModel;
+        } else if (root != outerVirtualModel && root.getBottomUpColumns().size() < outerVirtualModel.getBottomUpColumns().size()) {
+            outerVirtualModel.setNestedModel(root);
+            outerVirtualModel.moveLimitFrom(limitSource);
+            outerVirtualModel.moveAliasFrom(limitSource);
             // in this case outer model should be of "choose" type
-            outerModel.setSelectModelType(QueryModel.SELECT_MODEL_CHOOSE);
-            root = outerModel;
+            outerVirtualModel.setSelectModelType(QueryModel.SELECT_MODEL_CHOOSE);
+            root = outerVirtualModel;
         }
 
         if (useDistinctModel) {
@@ -2734,6 +2933,7 @@ class SqlOptimiser {
                         && model.getTableName() == null
                         && model.getTableNameFunction() == null
                         && model.getJoinModels().size() == 1
+                        && model.getWhereClause() == null
         ) {
             model = model.getNestedModel();
         }
@@ -2802,34 +3002,72 @@ class SqlOptimiser {
         traversalAlgo.traverse(node.rhs, literalCollector.rhs());
     }
 
+    private int validateColumnAndGetModelIndex(QueryModel model, CharSequence column, int dot, int position) throws SqlException {
+        ObjList<QueryModel> joinModels = model.getJoinModels();
+        int index = -1;
+        if (dot == -1) {
+            for (int i = 0, n = joinModels.size(); i < n; i++) {
+                if (joinModels.getQuick(i).getAliasToColumnMap().excludes(column)) {
+                    continue;
+                }
+
+                if (index != -1) {
+                    throw SqlException.ambiguousColumn(position);
+                }
+
+                index = i;
+            }
+
+            if (index == -1) {
+                throw SqlException.invalidColumn(position, column);
+            }
+
+        } else {
+            index = model.getAliasIndex(column, 0, dot);
+
+            if (index == -1) {
+                throw SqlException.$(position, "Invalid table name or alias");
+            }
+
+            if (joinModels.getQuick(index).getAliasToColumnMap().excludes(column, dot + 1, column.length())) {
+                throw SqlException.invalidColumn(position, column);
+            }
+
+        }
+        return index;
+    }
+
     private static class NonLiteralException extends RuntimeException {
         private static final NonLiteralException INSTANCE = new NonLiteralException();
     }
 
     private static class LiteralCheckingVisitor implements PostOrderTreeTraversalAlgo.Visitor {
-        private CharSequenceObjHashMap<QueryColumn> nameTypeMap;
+        private LowerCaseCharSequenceObjHashMap<QueryColumn> nameTypeMap;
 
         @Override
         public void visit(ExpressionNode node) {
             if (node.type == ExpressionNode.LITERAL) {
-                final int dot = Chars.indexOf(node.token, '.');
-                int index = dot == -1 ? nameTypeMap.keyIndex(node.token) : nameTypeMap.keyIndex(node.token, dot + 1, node.token.length());
-                // these columns are pre-validated
-                assert index < 0;
-                if (nameTypeMap.valueAt(index).getAst().type != ExpressionNode.LITERAL) {
-                    throw NonLiteralException.INSTANCE;
+                final int len = node.token.length();
+                if (SqlUtil.isNotBindVariable(node.token)) {
+                    final int dot = Chars.indexOf(node.token, 0, len, '.');
+                    int index = nameTypeMap.keyIndex(node.token, dot + 1, len);
+                    // these columns are pre-validated
+                    assert index < 0;
+                    if (nameTypeMap.valueAt(index).getAst().type != ExpressionNode.LITERAL) {
+                        throw NonLiteralException.INSTANCE;
+                    }
                 }
             }
         }
 
-        PostOrderTreeTraversalAlgo.Visitor of(CharSequenceObjHashMap<QueryColumn> nameTypeMap) {
+        PostOrderTreeTraversalAlgo.Visitor of(LowerCaseCharSequenceObjHashMap<QueryColumn> nameTypeMap) {
             this.nameTypeMap = nameTypeMap;
             return this;
         }
     }
 
     private static class LiteralRewritingVisitor implements PostOrderTreeTraversalAlgo.Visitor {
-        private CharSequenceObjHashMap<CharSequence> aliasToColumnMap;
+        private LowerCaseCharSequenceObjHashMap<CharSequence> aliasToColumnMap;
 
         @Override
         public void visit(ExpressionNode node) {
@@ -2849,7 +3087,7 @@ class SqlOptimiser {
             }
         }
 
-        PostOrderTreeTraversalAlgo.Visitor of(CharSequenceObjHashMap<CharSequence> aliasToColumnMap) {
+        PostOrderTreeTraversalAlgo.Visitor of(LowerCaseCharSequenceObjHashMap<CharSequence> aliasToColumnMap) {
             this.aliasToColumnMap = aliasToColumnMap;
             return this;
         }
@@ -2899,10 +3137,10 @@ class SqlOptimiser {
             switch (node.type) {
                 case ExpressionNode.LITERAL:
                     // ignore bind variables
-                    if (isNotBindVariable(node.token)) {
+                    if (SqlUtil.isNotBindVariable(node.token)) {
                         int dot = Chars.indexOf(node.token, '.');
-                        CharSequence name = extractColumnName(node.token, dot);
-                        indexes.add(getIndexOfTableForColumn(model, node.token, dot, node.position));
+                        CharSequence name = dot == -1 ? node.token : node.token.subSequence(dot + 1, node.token.length());
+                        indexes.add(validateColumnAndGetModelIndex(model, node.token, dot, node.position));
                         if (names != null) {
                             names.add(name);
                         }
@@ -2916,10 +3154,6 @@ class SqlOptimiser {
                 default:
                     break;
             }
-        }
-
-        private CharSequence extractColumnName(CharSequence token, int dot) {
-            return dot == -1 ? token : token.subSequence(dot + 1, token.length());
         }
 
         private PostOrderTreeTraversalAlgo.Visitor lhs() {
@@ -2947,5 +3181,39 @@ class SqlOptimiser {
         private void withModel(QueryModel model) {
             this.model = model;
         }
+    }
+
+    static {
+        notOps.put("not", NOT_OP_NOT);
+        notOps.put("and", NOT_OP_AND);
+        notOps.put("or", NOT_OP_OR);
+        notOps.put(">", NOT_OP_GREATER);
+        notOps.put(">=", NOT_OP_GREATER_EQ);
+        notOps.put("<", NOT_OP_LESS);
+        notOps.put("<=", NOT_OP_LESS_EQ);
+        notOps.put("=", NOT_OP_EQUAL);
+        notOps.put("!=", NOT_OP_NOT_EQ);
+        notOps.put("<>", NOT_OP_NOT_EQ);
+
+        joinBarriers = new IntHashSet();
+        joinBarriers.add(QueryModel.JOIN_OUTER);
+        joinBarriers.add(QueryModel.JOIN_ASOF);
+        joinBarriers.add(QueryModel.JOIN_SPLICE);
+        joinBarriers.add(QueryModel.JOIN_LT);
+
+        nullConstants.add("null");
+        nullConstants.add("NaN");
+
+        joinOps.put("=", JOIN_OP_EQUAL);
+        joinOps.put("and", JOIN_OP_AND);
+        joinOps.put("or", JOIN_OP_OR);
+        joinOps.put("~", JOIN_OP_REGEX);
+
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_CHOOSE);
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_NONE);
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_DISTINCT);
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_VIRTUAL);
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_ANALYTIC);
+        flexColumnModelTypes.add(QueryModel.SELECT_MODEL_GROUP_BY);
     }
 }

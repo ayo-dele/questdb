@@ -52,7 +52,7 @@ public interface FunctionFactory {
      * <li>N = timestamp</li>
      * <li>U = binary</li>
      * <li>V = variable argument list</li>
-     * <li>C = cursor</li>
+     * <li>R = record</li>
      * <li>H = long256</li>
      * </ul>
      *
@@ -65,9 +65,12 @@ public interface FunctionFactory {
 
     default boolean isGroupBy() { return false; }
 
+    default boolean isCursor() { return false; }
+
     Function newInstance(
             @Transient ObjList<Function> args,
             int position,
-            CairoConfiguration configuration
+            CairoConfiguration configuration,
+            SqlExecutionContext sqlExecutionContext
     ) throws SqlException;
 }

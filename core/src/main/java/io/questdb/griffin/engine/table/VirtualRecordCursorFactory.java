@@ -30,12 +30,14 @@ import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.griffin.SqlExecutionContext;
+import io.questdb.std.Misc;
 import io.questdb.std.ObjList;
 
 public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
     private final VirtualFunctionDirectSymbolRecordCursor cursor;
     private final ObjList<Function> functions;
     private final RecordCursorFactory baseFactory;
+    private final boolean supportsRandomAccess;
 
     public VirtualRecordCursorFactory(
             RecordMetadata metadata,
@@ -43,16 +45,22 @@ public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
             RecordCursorFactory baseFactory) {
         super(metadata);
         this.functions = functions;
-        this.cursor = new VirtualFunctionDirectSymbolRecordCursor(functions, baseFactory.recordCursorSupportsRandomAccess());
+        boolean supportsRandomAccess = baseFactory.recordCursorSupportsRandomAccess();
+        for (int i = 0, n = functions.size(); i < n; i++) {
+            if (!functions.getQuick(i).supportsRandomAccess()) {
+                supportsRandomAccess = false;
+                break;
+            }
+        }
+        this.supportsRandomAccess = supportsRandomAccess;
+        this.cursor = new VirtualFunctionDirectSymbolRecordCursor(functions, supportsRandomAccess);
         this.baseFactory = baseFactory;
     }
 
     @Override
     public void close() {
-        for (int i = 0, n = functions.size(); i < n; i++) {
-            functions.getQuick(i).close();
-        }
-        this.baseFactory.close();
+        Misc.freeObjList(functions);
+        Misc.free(baseFactory);
     }
 
     public RecordCursorFactory getBaseFactory() {
@@ -62,15 +70,13 @@ public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
     @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) {
         RecordCursor cursor = baseFactory.getCursor(executionContext);
-        for (int i = 0, n = functions.size(); i < n; i++) {
-            functions.getQuick(i).init(cursor, executionContext);
-        }
+        Function.init(functions, cursor, executionContext);
         this.cursor.of(cursor);
         return this.cursor;
     }
 
     @Override
     public boolean recordCursorSupportsRandomAccess() {
-        return baseFactory.recordCursorSupportsRandomAccess();
+        return supportsRandomAccess;
     }
 }

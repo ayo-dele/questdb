@@ -24,27 +24,33 @@
 
 package io.questdb.cairo;
 
+import java.io.Closeable;
+
 import io.questdb.cairo.sql.RowCursor;
 import io.questdb.cairo.sql.SymbolTable;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
-import io.questdb.std.*;
+import io.questdb.std.CharSequenceIntHashMap;
+import io.questdb.std.Chars;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.Hash;
+import io.questdb.std.Misc;
+import io.questdb.std.Numbers;
+import io.questdb.std.str.DirectCharSequence;
 import io.questdb.std.str.Path;
 import io.questdb.std.str.SingleCharCharSequence;
 
-import java.io.Closeable;
-
 public class SymbolMapWriter implements Closeable {
     public static final int HEADER_SIZE = 64;
-    private static final Log LOG = LogFactory.getLog(SymbolMapWriter.class);
     public static final int HEADER_CAPACITY = 0;
     public static final int HEADER_CACHE_ENABLED = 4;
     public static final int HEADER_NULL_FLAG = 8;
-
+    private static final Log LOG = LogFactory.getLog(SymbolMapWriter.class);
     private final BitmapIndexWriter indexWriter;
     private final ReadWriteMemory charMem;
     private final ReadWriteMemory offsetMem;
     private final CharSequenceIntHashMap cache;
+    private final DirectCharSequence tmpSymbol;
     private final int maxHash;
     private boolean nullValue = false;
 
@@ -95,6 +101,8 @@ public class SymbolMapWriter implements Closeable {
             } else {
                 this.cache = null;
             }
+
+            tmpSymbol = new DirectCharSequence();
             LOG.info().$("open [name=").$(path.trimTo(plen).concat(name).$()).$(", fd=").$(this.offsetMem.getFd()).$(", cache=").$(cache != null).$(", capacity=").$(symbolCapacity).$(']').$();
         } catch (CairoException e) {
             close();
@@ -133,6 +141,22 @@ public class SymbolMapWriter implements Closeable {
         return path.concat(columnName).put(".o").$();
     }
 
+    @Override
+    public void close() {
+        Misc.free(indexWriter);
+        Misc.free(charMem);
+        if (this.offsetMem != null) {
+            long fd = this.offsetMem.getFd();
+            Misc.free(offsetMem);
+            LOG.info().$("closed [fd=").$(fd).$(']').$();
+        }
+        nullValue = false;
+    }
+
+    public int getSymbolCount() {
+        return offsetToKey(offsetMem.getAppendOffset());
+    }
+
     public int put(char c) {
         return put(SingleCharCharSequence.get(c));
     }
@@ -154,38 +178,6 @@ public class SymbolMapWriter implements Closeable {
         return lookupAndPut(symbol);
     }
 
-    static int offsetToKey(long offset) {
-        return (int) ((offset - HEADER_SIZE) / 8L);
-    }
-
-    static long keyToOffset(int key) {
-        return HEADER_SIZE + key * 8L;
-    }
-
-    @Override
-    public void close() {
-        Misc.free(indexWriter);
-        Misc.free(charMem);
-        if (this.offsetMem != null) {
-            long fd = this.offsetMem.getFd();
-            Misc.free(offsetMem);
-            LOG.info().$("closed [fd=").$(fd).$(']').$();
-        }
-        nullValue = false;
-    }
-
-    public int getSymbolCount() {
-        return offsetToKey(offsetMem.getAppendOffset());
-    }
-
-    public void updateNullFlag(boolean flag) {
-        offsetMem.putBool(HEADER_NULL_FLAG, flag);
-    }
-
-    public void updateCacheFlag(boolean flag) {
-        offsetMem.putBool(HEADER_CACHE_ENABLED, flag);
-    }
-
     public void rollback(int symbolCount) {
         indexWriter.rollbackValues(keyToOffset(symbolCount));
         offsetMem.jumpTo(keyToOffset(symbolCount));
@@ -193,6 +185,22 @@ public class SymbolMapWriter implements Closeable {
         if (cache != null) {
             cache.clear();
         }
+    }
+
+    public void updateCacheFlag(boolean flag) {
+        offsetMem.putBool(HEADER_CACHE_ENABLED, flag);
+    }
+
+    public void updateNullFlag(boolean flag) {
+        offsetMem.putBool(HEADER_NULL_FLAG, flag);
+    }
+
+    static int offsetToKey(long offset) {
+        return (int) ((offset - HEADER_SIZE) / 8L);
+    }
+
+    static long keyToOffset(int key) {
+        return HEADER_SIZE + key * 8L;
     }
 
     boolean isCached() {
@@ -233,5 +241,49 @@ public class SymbolMapWriter implements Closeable {
         offsetMem.putLong(charMem.putStr(symbol));
         indexWriter.add(hash, offsetOffset);
         return offsetToKey(offsetOffset);
+    }
+
+    public void appendSymbolCharsBlock(long blockSize, long sourceAddress) {
+        long appendOffset = charMem.getAppendOffset();
+        try {
+            charMem.jumpTo(appendOffset);
+            charMem.putBlockOfBytes(sourceAddress, blockSize);
+        } finally {
+            charMem.jumpTo(appendOffset);
+        }
+    }
+
+    public void commitAppendedBlock(int nSymbolsAdded) {
+        long offset = charMem.getAppendOffset();
+        int symbolIndex = getSymbolCount();
+        int nSymbols = symbolIndex + nSymbolsAdded;
+        while (symbolIndex < nSymbols) {
+            long symCharsOffset = offset;
+            int symLen = charMem.getInt(offset);
+            offset += Integer.BYTES;
+            long symCharsOffsetHi = offset + symLen * Character.BYTES;
+            tmpSymbol.of(charMem.addressOf(offset), charMem.addressOf(symCharsOffsetHi));
+
+            long offsetOffset = offsetMem.getAppendOffset();
+            offsetMem.putLong(symCharsOffset);
+            int hash = Hash.boundedHash(tmpSymbol, maxHash);
+            indexWriter.add(hash, offsetOffset);
+
+            if (cache != null) {
+                cache.putAt(symbolIndex, tmpSymbol.toString(), offsetToKey(offsetOffset));
+            }
+
+            offset = symCharsOffsetHi;
+            charMem.jumpTo(offset);
+            symbolIndex++;
+        }
+        LOG.info().$("appended a block of ").$(nSymbolsAdded).$("symbols [fd=").$(this.offsetMem.getFd()).$(']').$();
+    }
+
+    void truncate() {
+        offsetMem.jumpTo(keyToOffset(0));
+        charMem.jumpTo(0);
+        indexWriter.truncate();
+        cache.clear();
     }
 }

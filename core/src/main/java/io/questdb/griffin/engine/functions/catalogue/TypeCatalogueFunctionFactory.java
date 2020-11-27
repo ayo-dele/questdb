@@ -24,31 +24,16 @@
 
 package io.questdb.griffin.engine.functions.catalogue;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoConfiguration;
 import io.questdb.cairo.sql.Function;
-import io.questdb.cairo.sql.RecordCursor;
-import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.griffin.FunctionFactory;
+import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
-import io.questdb.griffin.engine.EmptyTableRecordCursor;
 import io.questdb.griffin.engine.functions.CursorFunction;
-import io.questdb.std.Misc;
+import io.questdb.griffin.engine.functions.GenericRecordCursorFactory;
 import io.questdb.std.ObjList;
-import io.questdb.std.str.Path;
 
 public class TypeCatalogueFunctionFactory implements FunctionFactory {
-
-    private static final RecordMetadata METADATA;
-
-    static {
-        final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("typname", ColumnType.STRING));
-        metadata.add(new TableColumnMetadata("typbasetype", ColumnType.INT));
-        metadata.add(new TableColumnMetadata("typarray", ColumnType.INT));
-        metadata.add(new TableColumnMetadata("oid", ColumnType.INT));
-        metadata.add(new TableColumnMetadata("typnamespace", ColumnType.INT));
-        METADATA = metadata;
-    }
 
     @Override
     public String getSignature() {
@@ -56,36 +41,19 @@ public class TypeCatalogueFunctionFactory implements FunctionFactory {
     }
 
     @Override
-    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
-        return new CursorFunction(
-                position,
-                new TypeCatalogueCursorFactory(
-                        METADATA
-                )
-        );
+    public boolean isCursor() {
+        return true;
     }
 
-    private static class TypeCatalogueCursorFactory extends AbstractRecordCursorFactory {
-
-        private final Path path = new Path();
-
-        public TypeCatalogueCursorFactory(RecordMetadata metadata) {
-            super(metadata);
-        }
-
-        @Override
-        public void close() {
-            Misc.free(path);
-        }
-
-        @Override
-        public RecordCursor getCursor(SqlExecutionContext executionContext) {
-            return EmptyTableRecordCursor.INSTANCE;
-        }
-
-        @Override
-        public boolean recordCursorSupportsRandomAccess() {
-            return false;
-        }
+    @Override
+    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) throws SqlException {
+        return new CursorFunction(
+                position,
+                new GenericRecordCursorFactory(
+                        TypeCatalogueCursor.METADATA,
+                        new TypeCatalogueCursor(),
+                        false
+                )
+        );
     }
 }

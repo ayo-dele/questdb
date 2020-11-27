@@ -40,7 +40,6 @@ public class InsertStatementImpl implements InsertStatement {
     private final InsertMethodImpl insertMethod = new InsertMethodImpl();
     private final CairoEngine engine;
 
-    // todo: recycle these
     public InsertStatementImpl(
             CairoEngine engine,
             String tableName,
@@ -63,8 +62,22 @@ public class InsertStatementImpl implements InsertStatement {
     }
 
     @Override
-    public String getTableName() {
-        return tableName;
+    public void close() {
+        detachWriter();
+    }
+
+    @Override
+    public InsertMethod createMethod(SqlExecutionContext executionContext) {
+        initContext(executionContext);
+        if (insertMethod.writer == null) {
+            final TableWriter writer = engine.getWriter(executionContext.getCairoSecurityContext(), tableName);
+            if (writer.getStructureVersion() != getStructureVersion()) {
+                writer.close();
+                throw WriterOutOfDateException.INSTANCE;
+            }
+            insertMethod.writer = writer;
+        }
+        return insertMethod;
     }
 
     @Override
@@ -73,16 +86,13 @@ public class InsertStatementImpl implements InsertStatement {
     }
 
     @Override
-    public InsertMethod createMethod(SqlExecutionContext executionContext) {
-        initContext(executionContext);
+    public String getTableName() {
+        return tableName;
+    }
 
-        final TableWriter writer = engine.getWriter(executionContext.getCairoSecurityContext(), tableName);
-        if (writer.getStructureVersion() != getStructureVersion()) {
-            writer.close();
-            throw WriterOutOfDateException.INSTANCE;
-        }
-        insertMethod.writer = writer;
-        return insertMethod;
+    @Override
+    public void detachWriter() {
+        insertMethod.close();
     }
 
     private TableWriter.Row getRowWithTimestamp(TableWriter tableWriter) {
@@ -95,9 +105,7 @@ public class InsertStatementImpl implements InsertStatement {
 
     private void initContext(SqlExecutionContext executionContext) {
         final ObjList<? extends Function> functions = virtualRecord.getFunctions();
-        for (int i = 0, n = functions.size(); i < n; i++) {
-            functions.getQuick(i).init(null, executionContext);
-        }
+        Function.init(functions, null, executionContext);
         if (timestampFunction != null) {
             timestampFunction.init(null, executionContext);
         }
@@ -112,15 +120,26 @@ public class InsertStatementImpl implements InsertStatement {
         private TableWriter writer = null;
 
         @Override
-        public void execute() {
+        public long execute() {
             final TableWriter.Row row = rowFactory.getRow(writer);
             copier.copy(virtualRecord, row);
             row.append();
+            return 1;
         }
 
         @Override
         public void commit() {
             writer.commit();
+        }
+
+        @Override
+        public void rollback() {
+            writer.rollback();
+        }
+
+        @Override
+        public TableWriter getWriter() {
+            return writer;
         }
 
         @Override

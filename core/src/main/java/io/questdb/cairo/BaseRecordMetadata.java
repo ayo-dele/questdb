@@ -35,6 +35,20 @@ public abstract class BaseRecordMetadata implements RecordMetadata {
     protected int timestampIndex;
     protected int columnCount;
 
+    public static TableColumnMetadata copyOf(RecordMetadata metadata, int columnIndex) {
+        if (metadata instanceof BaseRecordMetadata) {
+            return ((BaseRecordMetadata) metadata).getColumnQuick(columnIndex);
+        }
+        return new TableColumnMetadata(
+                metadata.getColumnName(columnIndex),
+                metadata.getColumnType(columnIndex),
+                metadata.isColumnIndexed(columnIndex),
+                metadata.getIndexValueBlockCapacity(columnIndex),
+                metadata.isSymbolTableStatic(columnIndex),
+                metadata.getMetadata(columnIndex)
+        );
+    }
+
     @Override
     public int getColumnCount() {
         return columnCount;
@@ -70,16 +84,21 @@ public abstract class BaseRecordMetadata implements RecordMetadata {
     }
 
     @Override
-    public boolean isColumnIndexed(int columnIndex) {
-        return getColumnQuick(columnIndex).isIndexed();
+    public RecordMetadata getMetadata(int columnIndex) {
+        return getColumnQuick(columnIndex).getMetadata();
     }
 
-    public TableColumnMetadata getColumnQuick(int index) {
-        return columnMetadata.getQuick(index);
+    @Override
+    public boolean isColumnIndexed(int columnIndex) {
+        return getColumnQuick(columnIndex).isIndexed();
     }
 
     @Override
     public boolean isSymbolTableStatic(int columnIndex) {
         return columnMetadata.getQuick(columnIndex).isSymbolTableStatic();
+    }
+
+    public TableColumnMetadata getColumnQuick(int index) {
+        return columnMetadata.getQuick(index);
     }
 }

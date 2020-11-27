@@ -38,17 +38,12 @@ import org.jetbrains.annotations.Nullable;
  * getInt() are not cached.*
  */
 
-public abstract class SymbolFunction implements Function, SymbolTable {
+public abstract class SymbolFunction implements ScalarFunction, SymbolTable {
 
     private final int position;
 
     public SymbolFunction(int position) {
         this.position = position;
-    }
-
-    @Override
-    public char getChar(Record rec) {
-        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -68,6 +63,11 @@ public abstract class SymbolFunction implements Function, SymbolTable {
 
     @Override
     public final byte getByte(Record rec) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public char getChar(Record rec) {
         throw new UnsupportedOperationException();
     }
 
@@ -92,7 +92,17 @@ public abstract class SymbolFunction implements Function, SymbolTable {
     }
 
     @Override
-    public RecordMetadata getMetadata() {
+    public void getLong256(Record rec, CharSink sink) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Long256 getLong256A(Record rec) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Long256 getLong256B(Record rec) {
         throw new UnsupportedOperationException();
     }
 
@@ -139,21 +149,6 @@ public abstract class SymbolFunction implements Function, SymbolTable {
     @Override
     public final int getType() {
         return ColumnType.SYMBOL;
-    }
-
-    @Override
-    public Long256 getLong256A(Record rec) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Long256 getLong256B(Record rec) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void getLong256(Record rec, CharSink sink) {
-        throw new UnsupportedOperationException();
     }
 
     @Nullable

@@ -26,36 +26,21 @@ package io.questdb.cutlass.pgwire;
 
 import io.questdb.MessageBus;
 import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.griffin.FunctionFactoryCache;
 import io.questdb.griffin.SqlCompiler;
 import io.questdb.network.PeerDisconnectedException;
 import io.questdb.network.PeerIsSlowToReadException;
 import io.questdb.network.PeerIsSlowToWriteException;
 import io.questdb.std.AssociativeCache;
-import io.questdb.std.CharSequenceObjHashMap;
 import io.questdb.std.Misc;
-import io.questdb.std.ObjList;
 
 import java.io.Closeable;
 
 public class PGJobContext implements Closeable {
-    public static final int PG_VARCHAR = 1043;
-    public static final int PG_TIMESTAMP = 1114;
-    public static final int PG_TIMESTAMPZ = 1184;
-    public static final int PG_FLOAT8 = 701;
-    public static final int PG_FLOAT4 = 700;
-    public static final int PG_INT4 = 23;
-    public static final int PG_INT2 = 21;
-    public static final int PG_INT8 = 20;
-    public static final int PG_BOOL = 16;
-    public static final int PG_CHAR = 18;
-    public static final int PG_DATE = 1082;
-    public static final int PG_BYTEA = 17;
-    public static final int PG_UNSPECIFIED = 0;
+
     private final SqlCompiler compiler;
-    private final AssociativeCache<Object> factoryCache;
-    private final CharSequenceObjHashMap<PGConnectionContext.NamedStatementWrapper> namedStatementMap;
-    private final ObjList<BindVariableSetter> bindVariableSetters = new ObjList<>();
+    private final AssociativeCache<RecordCursorFactory> factoryCache;
 
     public PGJobContext(PGWireConfiguration configuration, CairoEngine engine, MessageBus messageBus, FunctionFactoryCache functionFactoryCache) {
         this.compiler = new SqlCompiler(engine, messageBus, functionFactoryCache);
@@ -63,12 +48,12 @@ public class PGJobContext implements Closeable {
                 configuration.getFactoryCacheColumnCount(),
                 configuration.getFactoryCacheRowCount()
         );
-        this.namedStatementMap = new CharSequenceObjHashMap<>();
     }
 
     @Override
     public void close() {
         Misc.free(compiler);
+        Misc.free(factoryCache);
     }
 
     public void handleClientOperation(PGConnectionContext context)
@@ -76,6 +61,6 @@ public class PGJobContext implements Closeable {
             PeerIsSlowToReadException,
             PeerDisconnectedException,
             BadProtocolException {
-        context.handleClientOperation(compiler, factoryCache, namedStatementMap, bindVariableSetters);
+        context.handleClientOperation(compiler, factoryCache);
     }
 }

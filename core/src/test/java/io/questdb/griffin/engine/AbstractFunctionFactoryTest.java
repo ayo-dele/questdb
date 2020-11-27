@@ -79,7 +79,7 @@ public abstract class AbstractFunctionFactoryTest extends BaseFunctionFactoryTes
         final String signature = functionFactory.getSignature();
 
         // validate signature first
-        final int pos = FunctionParser.validateSignatureAndGetNameSeparator(signature);
+        final int pos = FunctionFactoryDescriptor.validateSignatureAndGetNameSeparator(signature);
 
         // create metadata
 
@@ -315,13 +315,13 @@ public abstract class AbstractFunctionFactoryTest extends BaseFunctionFactoryTes
         if (b) {
             final char typeChar = signature.charAt(signatureTypeOffset + i + 1);
             constantArg = Character.isLowerCase(typeChar);
-            argType = FunctionParser.getArgType(typeChar);
+            argType = FunctionFactoryDescriptor.getArgType(typeChar);
         } else {
             constantArg = constVarArg;
             argType = getArgType(arg);
         }
 
-        metadata.add(new TableColumnMetadata(columnName, argType, false, 0, false));
+        metadata.add(new TableColumnMetadata(columnName, argType, false, 0, false, null));
 
         if (constantArg || forceConstant) {
             printConstant(argType, expression1, arg);

@@ -25,34 +25,49 @@
 package io.questdb.cairo;
 
 import io.questdb.cairo.sql.RecordMetadata;
-import io.questdb.std.CharSequenceIntHashMap;
+import io.questdb.std.LowerCaseCharSequenceIntHashMap;
 import io.questdb.std.ObjList;
 
 public class GenericRecordMetadata extends BaseRecordMetadata {
     public static final GenericRecordMetadata EMPTY = new GenericRecordMetadata();
+    private final LowerCaseCharSequenceIntHashMap columnNameIndexMap;
 
     public GenericRecordMetadata() {
         this.columnMetadata = new ObjList<>();
-        this.columnNameIndexMap = new CharSequenceIntHashMap();
+        this.columnNameIndexMap = new LowerCaseCharSequenceIntHashMap();
         this.timestampIndex = -1;
     }
 
     public static void copyColumns(RecordMetadata from, GenericRecordMetadata to) {
-        for (int i = 0, n = from.getColumnCount(); i < n; i++) {
-            to.add(new TableColumnMetadata(
-                    from.getColumnName(i),
-                    from.getColumnType(i),
-                    from.isColumnIndexed(i),
-                    from.getIndexValueBlockCapacity(i),
-                    from.isSymbolTableStatic(i)
-            ));
+        if (from instanceof BaseRecordMetadata) {
+            final BaseRecordMetadata gm = (BaseRecordMetadata) from;
+            for (int i = 0, n = gm.getColumnCount(); i < n; i++) {
+                to.add(gm.getColumnQuick(i));
+            }
+        } else {
+            for (int i = 0, n = from.getColumnCount(); i < n; i++) {
+                to.add(new TableColumnMetadata(
+                        from.getColumnName(i),
+                        from.getColumnType(i),
+                        from.isColumnIndexed(i),
+                        from.getIndexValueBlockCapacity(i),
+                        from.isSymbolTableStatic(i),
+                        GenericRecordMetadata.copyOf(from.getMetadata(i))
+                ));
+            }
         }
     }
 
     public static GenericRecordMetadata copyOf(RecordMetadata that) {
-        GenericRecordMetadata metadata = copyOfSansTimestamp(that);
-        metadata.setTimestampIndex(that.getTimestampIndex());
-        return metadata;
+        if (that != null) {
+            if (that instanceof GenericRecordMetadata) {
+                return (GenericRecordMetadata) that;
+            }
+            GenericRecordMetadata metadata = copyOfSansTimestamp(that);
+            metadata.setTimestampIndex(that.getTimestampIndex());
+            return metadata;
+        }
+        return null;
     }
 
     public static GenericRecordMetadata copyOfSansTimestamp(RecordMetadata that) {
@@ -61,16 +76,19 @@ public class GenericRecordMetadata extends BaseRecordMetadata {
         return metadata;
     }
 
-    public GenericRecordMetadata add(TableColumnMetadata meta) {
-        int index = columnNameIndexMap.keyIndex(meta.getName());
-        if (index > -1) {
-            columnNameIndexMap.putAt(index, meta.getName(), columnCount);
-            columnMetadata.add(meta);
-            columnCount++;
-            return this;
-        } else {
-            throw CairoException.instance(0).put("Duplicate column [name=").put(meta.getName()).put(']');
+    public static RecordMetadata removeTimestamp(RecordMetadata that) {
+        if (that.getTimestampIndex() != -1) {
+            if (that instanceof GenericRecordMetadata) {
+                ((GenericRecordMetadata) that).setTimestampIndex(-1);
+                return that;
+            }
+            return GenericRecordMetadata.copyOfSansTimestamp(that);
         }
+        return that;
+    }
+
+    public GenericRecordMetadata add(TableColumnMetadata meta) {
+        return add(columnCount, meta);
     }
 
     public GenericRecordMetadata add(int i, TableColumnMetadata meta) {
@@ -90,6 +108,15 @@ public class GenericRecordMetadata extends BaseRecordMetadata {
         columnNameIndexMap.clear();
         columnCount = 0;
         timestampIndex = -1;
+    }
+
+    @Override
+    public int getColumnIndexQuiet(CharSequence columnName, int lo, int hi) {
+        final int index = columnNameIndexMap.keyIndex(columnName, lo, hi);
+        if (index < 0) {
+            return columnNameIndexMap.valueAt(index);
+        }
+        return -1;
     }
 
     public void setTimestampIndex(int index) {

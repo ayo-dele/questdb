@@ -65,7 +65,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
@@ -76,13 +76,13 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE));
-        metadata.add(new TableColumnMetadata("c", ColumnType.SHORT));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE, null));
+        metadata.add(new TableColumnMetadata("c", ColumnType.SHORT, null));
         assertFail(2, "ambiguous function call: +(BYTE,SHORT)", "a + c", metadata);
     }
 
@@ -100,7 +100,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         };
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a or not false", metadata, functionParser);
         Assert.assertEquals(ColumnType.BOOLEAN, function.getType());
@@ -126,8 +126,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         };
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
-        metadata.add(new TableColumnMetadata("b", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a or not b", metadata, functionParser);
         Assert.assertEquals(ColumnType.BOOLEAN, function.getType());
@@ -154,8 +154,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     public void testByteAndShortToIntCast() throws SqlException {
         functions.add(new AddIntFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE));
-        metadata.add(new TableColumnMetadata("b", ColumnType.SHORT));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.SHORT, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a+b", metadata, functionParser);
         Assert.assertEquals(ColumnType.INT, function.getType());
@@ -202,8 +202,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     public void testByteToShortCast() throws SqlException {
         functions.add(new AddShortFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE));
-        metadata.add(new TableColumnMetadata("b", ColumnType.BYTE));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BYTE, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.BYTE, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a+b", metadata, functionParser);
         Assert.assertEquals(ColumnType.SHORT, function.getType());
@@ -222,7 +222,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     public void testConstVarArgFunction() throws SqlException {
         functions.add(new InStrFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.STRING));
+        metadata.add(new TableColumnMetadata("a", ColumnType.STRING, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a in ('xu', 'yk')", metadata, functionParser);
         Assert.assertEquals(ColumnType.BOOLEAN, function.getType());
@@ -307,8 +307,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     @Test
     public void testFunctionDoesNotExist() {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
-        metadata.add(new TableColumnMetadata("c", ColumnType.SYMBOL, false, 0, false));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
+        metadata.add(new TableColumnMetadata("c", ColumnType.SYMBOL, false, 0, false, null));
         assertFail(5, "unknown function name: xyz(BOOLEAN,SYMBOL)", "a or xyz(a,c)", metadata);
     }
 
@@ -321,7 +321,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 throw new RuntimeException("oops");
             }
         });
@@ -338,7 +338,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
@@ -355,7 +355,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return new IntConstant(position, 0);
             }
         });
@@ -509,9 +509,9 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(new ToCharBinFunctionFactory());
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.DATE));
-        metadata.add(new TableColumnMetadata("b", ColumnType.TIMESTAMP));
-        metadata.add(new TableColumnMetadata("c", ColumnType.BINARY));
+        metadata.add(new TableColumnMetadata("a", ColumnType.DATE, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.TIMESTAMP, null));
+        metadata.add(new TableColumnMetadata("c", ColumnType.BINARY, null));
 
         FunctionParser functionParser = createFunctionParser();
         Record record = new TestRecord();
@@ -620,7 +620,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return function;
             }
         });
@@ -638,7 +638,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new BooleanFunction(position) {
                     @Override
                     public boolean getBool(Record rec) {
@@ -666,7 +666,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new ByteFunction(position) {
                     @Override
                     public byte getByte(Record rec) {
@@ -694,7 +694,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new DateFunction(position) {
                     @Override
                     public long getDate(Record rec) {
@@ -722,7 +722,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new DoubleFunction(position) {
                     @Override
                     public double getDouble(Record rec) {
@@ -750,7 +750,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new FloatFunction(position) {
                     @Override
                     public float getFloat(Record rec) {
@@ -778,7 +778,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new IntFunction(position) {
                     @Override
                     public int getInt(Record rec) {
@@ -806,7 +806,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new LongFunction(position) {
                     @Override
                     public long getLong(Record rec) {
@@ -834,7 +834,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new StrFunction(position) {
                     @Override
                     public CharSequence getStr(Record rec) {
@@ -867,7 +867,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new SymbolConstant(position, null, SymbolTable.VALUE_IS_NULL);
             }
         });
@@ -885,7 +885,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new ShortFunction(position) {
                     @Override
                     public short getShort(Record rec) {
@@ -913,7 +913,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new StrFunction(position) {
                     private final String x = "abc";
 
@@ -948,7 +948,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new SymbolConstant(position, "xyz", 0);
             }
         });
@@ -966,7 +966,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration1, SqlExecutionContext sqlExecutionContext) {
                 return new TimestampFunction(position) {
                     @Override
                     public long getTimestamp(Record rec) {
@@ -1033,16 +1033,16 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     @Test
     public void testInvalidColumn() {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.SHORT));
-        metadata.add(new TableColumnMetadata("c", ColumnType.SHORT));
+        metadata.add(new TableColumnMetadata("a", ColumnType.SHORT, null));
+        metadata.add(new TableColumnMetadata("c", ColumnType.SHORT, null));
         assertFail(4, "Invalid column: d", "a + d", metadata);
     }
 
     @Test
     public void testInvalidConstant() {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
-        metadata.add(new TableColumnMetadata("c", ColumnType.SYMBOL, false, 0, true));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
+        metadata.add(new TableColumnMetadata("c", ColumnType.SYMBOL, false, 0, true, null));
         assertFail(4, "invalid constant: 1c", "a + 1c", metadata);
     }
 
@@ -1076,7 +1076,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     @Test
     public void testNoArgFunctionDoesNotExist() {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         assertFail(5, "unknown function name", "a or xyz()", metadata);
     }
 
@@ -1084,7 +1084,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     public void testNoArgFunctionWrongSignature() {
         functions.add(new SysdateFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         assertFail(7, "unexpected argument", "a or   sysdate(a)", metadata);
     }
 
@@ -1092,8 +1092,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     public void testPassColumnToConstVarArgFunction() {
         functions.add(new InStrFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.STRING));
-        metadata.add(new TableColumnMetadata("b", ColumnType.STRING));
+        metadata.add(new TableColumnMetadata("a", ColumnType.STRING, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.STRING, null));
         assertFail(6, "constant expected", "a in (b, 'y')", metadata);
     }
 
@@ -1106,7 +1106,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
@@ -1130,13 +1130,13 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.INT));
+        metadata.add(new TableColumnMetadata("a", ColumnType.INT, null));
         try {
             parseFunction("x(a)", metadata, createFunctionParser());
             Assert.fail();
@@ -1208,8 +1208,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
 
         FunctionParser functionParser = createFunctionParser();
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.STRING));
-        metadata.add(new TableColumnMetadata("b", ColumnType.SYMBOL, false, 0, false));
+        metadata.add(new TableColumnMetadata("a", ColumnType.STRING, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.SYMBOL, false, 0, false, null));
 
         Function function = parseFunction("length(b) - length(a)",
                 metadata,
@@ -1245,7 +1245,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     @Test
     public void testTooFewArguments() {
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.SHORT));
+        metadata.add(new TableColumnMetadata("a", ColumnType.SHORT, null));
         assertFail(2, "too few arguments for '+' [found=1,expected=2]", "a + ", metadata);
     }
 
@@ -1254,7 +1254,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(new InStrFunctionFactory());
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.STRING));
+        metadata.add(new TableColumnMetadata("a", ColumnType.STRING, null));
 
         FunctionParser functionParser = createFunctionParser();
         Record record = new Record() {
@@ -1274,7 +1274,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(new InStrFunctionFactory());
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.STRING));
+        metadata.add(new TableColumnMetadata("a", ColumnType.STRING, null));
 
         FunctionParser functionParser = createFunctionParser();
         Record record = new Record() {
@@ -1292,8 +1292,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     private void assertCastToDouble(double expected, int type1, int type2, Record record) throws SqlException {
         functions.add(new AddDoubleFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", type1));
-        metadata.add(new TableColumnMetadata("b", type2));
+        metadata.add(new TableColumnMetadata("a", type1, null));
+        metadata.add(new TableColumnMetadata("b", type2, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a+b", metadata, functionParser);
         Assert.assertEquals(ColumnType.DOUBLE, function.getType());
@@ -1303,8 +1303,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     private void assertCastToFloat(float expected, int type1, int type2, Record record) throws SqlException {
         functions.add(new AddFloatFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", type1));
-        metadata.add(new TableColumnMetadata("b", type2));
+        metadata.add(new TableColumnMetadata("a", type1, null));
+        metadata.add(new TableColumnMetadata("b", type2, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a+b", metadata, functionParser);
         Assert.assertEquals(ColumnType.FLOAT, function.getType());
@@ -1314,8 +1314,8 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
     private void assertCastToLong(long expected, int type1, int type2, Record record) throws SqlException {
         functions.add(new AddLongFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", type1));
-        metadata.add(new TableColumnMetadata("b", type2));
+        metadata.add(new TableColumnMetadata("a", type1, null));
+        metadata.add(new TableColumnMetadata("b", type2, null));
         FunctionParser functionParser = createFunctionParser();
         Function function = parseFunction("a+b", metadata, functionParser);
         Assert.assertEquals(ColumnType.LONG, function.getType());
@@ -1342,14 +1342,14 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return null;
             }
         });
         functions.add(new NotFunctionFactory());
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
-        metadata.add(new TableColumnMetadata("b", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
+        metadata.add(new TableColumnMetadata("b", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         Assert.assertNotNull(parseFunction("a or not b", metadata, functionParser));
         Assert.assertEquals(2, functionParser.getFunctionCount());
@@ -1363,7 +1363,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
             }
 
             @Override
-            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) {
+            public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) {
                 return constant;
             }
         });

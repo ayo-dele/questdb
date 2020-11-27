@@ -34,6 +34,7 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
     private final Path path;
     private final FilesFacade ff;
     private final CharSequenceIntHashMap tmpValidationMap = new CharSequenceIntHashMap();
+    private final int id;
     private ReadOnlyMemory transitionMeta;
 
     public TableReaderMetadata(FilesFacade ff, Path path) {
@@ -45,6 +46,7 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
             this.columnNameIndexMap = new CharSequenceIntHashMap(columnCount);
             TableUtils.validate(ff, metaMem, this.columnNameIndexMap);
             this.timestampIndex = metaMem.getInt(TableUtils.META_OFFSET_TIMESTAMP_INDEX);
+            this.id = metaMem.getInt(TableUtils.META_OFFSET_TABLE_ID);
             this.columnMetadata = new ObjList<>(columnCount);
             long offset = TableUtils.getColumnNameOffset(columnCount);
 
@@ -58,7 +60,8 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
                                 TableUtils.getColumnType(metaMem, i),
                                 TableUtils.isColumnIndexed(metaMem, i),
                                 TableUtils.getIndexBlockCapacity(metaMem, i),
-                                true
+                                true,
+                                null
                         )
                 );
                 offset += ReadOnlyMemory.getStorageLength(name);
@@ -163,6 +166,13 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
         this.timestampIndex = metaMem.getInt(TableUtils.META_OFFSET_TIMESTAMP_INDEX);
     }
 
+    public void cloneTo(AppendMemory mem) {
+        long len = ff.length(metaMem.getFd());
+        for (long p = 0; p < len; p++) {
+            mem.putByte(metaMem.getByte(p));
+        }
+    }
+
     @Override
     public void close() {
         Misc.free(metaMem);
@@ -225,6 +235,10 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
         return columnCount;
     }
 
+    public int getId() {
+        return id;
+    }
+
     public int getPartitionBy() {
         return metaMem.getInt(TableUtils.META_OFFSET_PARTITION_BY);
     }
@@ -250,14 +264,8 @@ public class TableReaderMetadata extends BaseRecordMetadata implements Closeable
                 TableUtils.getColumnType(metaMem, index),
                 TableUtils.isColumnIndexed(metaMem, index),
                 TableUtils.getIndexBlockCapacity(metaMem, index),
-                true
+                true,
+                null
         );
     }
-
-	public void cloneTo(AppendMemory mem) {
-		long len = ff.length(metaMem.getFd());
-		for (long p = 0; p < len; p++) {
-			mem.putByte(metaMem.getByte(p));
-		}
-	}
 }

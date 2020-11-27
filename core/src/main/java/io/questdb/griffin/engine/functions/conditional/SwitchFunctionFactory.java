@@ -31,6 +31,7 @@ import io.questdb.cairo.sql.Record;
 import io.questdb.griffin.FunctionFactory;
 import io.questdb.griffin.SqlCompiler;
 import io.questdb.griffin.SqlException;
+import io.questdb.griffin.SqlExecutionContext;
 import io.questdb.griffin.engine.functions.constants.Constants;
 import io.questdb.std.CharSequenceObjHashMap;
 import io.questdb.std.IntObjHashMap;
@@ -91,7 +92,7 @@ public class SwitchFunctionFactory implements FunctionFactory {
     }
 
     @Override
-    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration) throws SqlException {
+    public Function newInstance(ObjList<Function> args, int position, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) throws SqlException {
         int n = args.size();
 
         final Function keyFunction = args.getQuick(0);
@@ -131,7 +132,8 @@ public class SwitchFunctionFactory implements FunctionFactory {
                     CaseCommon.getCastFunction(
                             args.getQuick(i),
                             returnType,
-                            configuration
+                            configuration,
+                            sqlExecutionContext
                     )
             );
         }
@@ -238,10 +240,6 @@ public class SwitchFunctionFactory implements FunctionFactory {
 
             if (a && b || !a && !b) {
                 throw SqlException.$(args.getQuick(3).getPosition(), "duplicate branch");
-            }
-
-            if (elseBranch != null) {
-                throw SqlException.$(elseBranch.getPosition(), "duplicate boolean values");
             }
 
             if (a) {

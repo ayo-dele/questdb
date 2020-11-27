@@ -30,6 +30,7 @@ set(
         src/main/c/share/zip.c
         src/main/c/share/os.h
         src/main/c/share/vec_agg_vanilla.h
+        src/main/c/share/util.cpp
 )
 
 # JNI includes
@@ -162,7 +163,7 @@ else ()
     )
 
     # AVX2 lib
-    add_library(questdb-avx2 OBJECT ${VCL_FILES})
+    add_library(questdb-avx2 OBJECT ${VCL_FILES} src/main/c/share/vec_radix_sort.cpp)
     set_target_properties(
             questdb-avx2 PROPERTIES
             COMPILE_FLAGS "-m64 -O3 -mavx2 -fPIC -mfma -std=c++17"

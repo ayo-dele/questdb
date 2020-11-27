@@ -57,9 +57,13 @@ public interface LogRecord {
 
     LogRecord $ts(long x);
 
+    LogRecord $256(long a, long b, long c, long d);
+
     boolean isEnabled();
 
     LogRecord ts();
+
+    LogRecord microTime(long x);
 
     LogRecord utf8(CharSequence sequence);
 }

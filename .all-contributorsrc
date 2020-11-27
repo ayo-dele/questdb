@@ -105,6 +105,44 @@
         "blog",
         "example"
       ]
+    },
+    {
+      "login": "alexprut",
+      "name": "Alex Prut",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/1648497?v=4",
+      "profile": "http://alexprut.com",
+      "contributions": [
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "lbowman",
+      "name": "Levi Bowman",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/1477427?v=4",
+      "profile": "https://github.com/lbowman",
+      "contributions": [
+        "code",
+        "test"
+      ]
+    },
+    {
+      "login": "chankeypathak",
+      "name": "Chankey Pathak",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/424822?v=4",
+      "profile": "https://tutswiki.com/",
+      "contributions": [
+        "blog"
+      ]
+    },
+    {
+      "login": "upsidedownsmile",
+      "name": "Tiago Martins",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/26444088?v=4",
+      "profile": "https://github.com/upsidedownsmile",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "badgeTemplate": "[![All Contributors](https://img.shields.io/badge/all_contributors-<%= contributors.length %>-orange.svg)](#contributors)",

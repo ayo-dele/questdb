@@ -29,6 +29,7 @@ import io.questdb.cairo.ColumnType;
 import io.questdb.cairo.sql.Function;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.cairo.sql.RecordMetadata;
+import io.questdb.cairo.sql.ScalarFunction;
 import io.questdb.griffin.engine.functions.CursorFunction;
 import io.questdb.griffin.engine.functions.bind.BindVariableService;
 import io.questdb.griffin.engine.functions.bind.IndexedParameterLinkFunction;
@@ -54,18 +55,6 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
     private static final int MATCH_PARTIAL_MATCH = 2;
     private static final int MATCH_EXACT_MATCH = 3;
 
-    private static final IntHashSet invalidFunctionNameChars = new IntHashSet();
-    private static final CharSequenceHashSet invalidFunctionNames = new CharSequenceHashSet();
-
-    static {
-        for (int i = 0, n = SqlCompiler.sqlControlSymbols.size(); i < n; i++) {
-            invalidFunctionNames.add(SqlCompiler.sqlControlSymbols.getQuick(i));
-        }
-        invalidFunctionNameChars.add(' ');
-        invalidFunctionNameChars.add('\"');
-        invalidFunctionNameChars.add('\'');
-    }
-
     private final ObjList<Function> mutableArgs = new ObjList<>();
     private final ArrayDeque<Function> stack = new ArrayDeque<>();
     private final PostOrderTreeTraversalAlgo traverseAlgo = new PostOrderTreeTraversalAlgo();
@@ -79,162 +68,6 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
     public FunctionParser(CairoConfiguration configuration, FunctionFactoryCache functionFactoryCache) {
         this.configuration = configuration;
         this.functionFactoryCache = functionFactoryCache;
-    }
-
-    public static int getArgType(char c) {
-        int sigArgType;
-        switch (Character.toUpperCase(c)) {
-            case 'D':
-                sigArgType = ColumnType.DOUBLE;
-                break;
-            case 'B':
-                sigArgType = ColumnType.BYTE;
-                break;
-            case 'E':
-                sigArgType = ColumnType.SHORT;
-                break;
-            case 'A':
-                sigArgType = ColumnType.CHAR;
-                break;
-            case 'F':
-                sigArgType = ColumnType.FLOAT;
-                break;
-            case 'I':
-                sigArgType = ColumnType.INT;
-                break;
-            case 'L':
-                sigArgType = ColumnType.LONG;
-                break;
-            case 'S':
-                sigArgType = ColumnType.STRING;
-                break;
-            case 'T':
-                sigArgType = ColumnType.BOOLEAN;
-                break;
-            case 'K':
-                sigArgType = ColumnType.SYMBOL;
-                break;
-            case 'M':
-                sigArgType = ColumnType.DATE;
-                break;
-            case 'N':
-                sigArgType = ColumnType.TIMESTAMP;
-                break;
-            case 'U':
-                sigArgType = ColumnType.BINARY;
-                break;
-            case 'V':
-                sigArgType = TypeEx.VAR_ARG;
-                break;
-            case 'C':
-                sigArgType = TypeEx.CURSOR;
-                break;
-            case 'H':
-                sigArgType = ColumnType.LONG256;
-                break;
-            default:
-                sigArgType = -1;
-                break;
-        }
-        return sigArgType;
-    }
-
-    public static int validateSignatureAndGetNameSeparator(String sig) throws SqlException {
-        if (sig == null) {
-            throw SqlException.$(0, "NULL signature");
-        }
-
-        int openBraceIndex = sig.indexOf('(');
-        if (openBraceIndex == -1) {
-            throw SqlException.$(0, "open brace expected");
-        }
-
-        if (openBraceIndex == 0) {
-            throw SqlException.$(0, "empty function name");
-        }
-
-        if (sig.charAt(sig.length() - 1) != ')') {
-            throw SqlException.$(0, "close brace expected");
-        }
-
-        int c = sig.charAt(0);
-        if (c >= '0' && c <= '9') {
-            throw SqlException.$(0, "name must not start with digit");
-        }
-
-        for (int i = 0; i < openBraceIndex; i++) {
-            char cc = sig.charAt(i);
-            if (invalidFunctionNameChars.contains(cc)) {
-                throw SqlException.position(0).put("invalid character: ").put(cc);
-            }
-        }
-
-        if (invalidFunctionNames.keyIndex(sig, 0, openBraceIndex) < 0) {
-            throw SqlException.position(0).put("invalid function name character: ").put(sig);
-        }
-
-        // validate data types
-        for (int i = openBraceIndex + 1, n = sig.length() - 1; i < n; i++) {
-            char cc = sig.charAt(i);
-            if (getArgType(cc) == -1) {
-                throw SqlException.position(0).put("illegal argument type: ").put(cc);
-            }
-        }
-        return openBraceIndex;
-    }
-
-    private static SqlException invalidFunction(CharSequence message, ExpressionNode node, ObjList<Function> args) {
-        SqlException ex = SqlException.position(node.position);
-        ex.put(message);
-        ex.put(": ");
-        ex.put(node.token);
-        ex.put('(');
-        if (args != null) {
-            for (int i = 0, n = args.size(); i < n; i++) {
-                if (i > 0) {
-                    ex.put(',');
-                }
-                ex.put(ColumnType.nameOf(args.getQuick(i).getType()));
-            }
-        }
-        ex.put(')');
-        return ex;
-    }
-
-    private static SqlException invalidArgument(ExpressionNode node, ObjList<Function> args, CharSequence expected, int offset, int count) {
-        SqlException ex = SqlException.position(node.position);
-        ex.put("unexpected argument for function: ");
-        ex.put(node.token);
-        ex.put(". expected args: ");
-        ex.put('(');
-        if (expected != null) {
-            for (int i = 0; i < count; i++) {
-                if (i > 0) {
-                    ex.put(',');
-                }
-                char c = expected.charAt(offset + i);
-                ex.put(ColumnType.nameOf(getArgType(c)));
-                if (Character.isLowerCase(c)) {
-                    ex.put(" constant");
-                }
-            }
-        }
-        ex.put("). actual args: ");
-        ex.put('(');
-        if (args != null) {
-            for (int i = 0, n = args.size(); i < n; i++) {
-                if (i > 0) {
-                    ex.put(',');
-                }
-                Function arg = args.getQuick(i);
-                ex.put(ColumnType.nameOf(arg.getType()));
-                if (arg.isConstant()) {
-                    ex.put(" constant");
-                }
-            }
-        }
-        ex.put(')');
-        return ex;
     }
 
     public Function createIndexParameter(int variableIndex, ExpressionNode node) throws SqlException {
@@ -253,13 +86,20 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         return new NamedParameterLinkFunction(Chars.toString(node.token), function.getType(), node.position);
     }
 
-    @NotNull
-    private BindVariableService getBindVariableService() throws SqlException {
-        final BindVariableService bindVariableService = sqlExecutionContext.getBindVariableService();
-        if (bindVariableService == null) {
-            throw SqlException.$(0, "bind variable service is not provided");
-        }
-        return bindVariableService;
+    public int getFunctionCount() {
+        return functionFactoryCache.getFunctionCount();
+    }
+
+    public FunctionFactoryCache getFunctionFactoryCache() {
+        return functionFactoryCache;
+    }
+
+    public boolean isCursor(CharSequence token) {
+        return functionFactoryCache.isCursor(token);
+    }
+
+    public boolean isGroupBy(CharSequence token) {
+        return functionFactoryCache.isGroupBy(token);
     }
 
     /**
@@ -303,7 +143,13 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         try {
             this.metadata = metadata;
             traverseAlgo.traverse(node, this);
-            return stack.poll();
+            final Function function = stack.poll();
+            if (function != null && function.isConstant() && (function instanceof ScalarFunction)) {
+                try (function) {
+                    return functionToConstant(function);
+                }
+            }
+            return function;
         } finally {
             if (metadataStack.size() == 0) {
                 this.metadata = null;
@@ -342,6 +188,9 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                         stack.push(createColumn(node));
                     }
                     break;
+                case ExpressionNode.MEMBER_ACCESS:
+                    stack.push(new StrConstant(node.position, node.token));
+                    break;
                 case ExpressionNode.CONSTANT:
                     stack.push(createConstant(node));
                     break;
@@ -363,6 +212,63 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         }
     }
 
+    private static SqlException invalidFunction(CharSequence message, ExpressionNode node, ObjList<Function> args) {
+        SqlException ex = SqlException.position(node.position);
+        ex.put(message);
+        ex.put(": ");
+        ex.put(node.token);
+        ex.put('(');
+        if (args != null) {
+            for (int i = 0, n = args.size(); i < n; i++) {
+                if (i > 0) {
+                    ex.put(',');
+                }
+                ex.put(ColumnType.nameOf(args.getQuick(i).getType()));
+            }
+        }
+        ex.put(')');
+        return ex;
+    }
+
+    private static SqlException invalidArgument(ExpressionNode node, ObjList<Function> args, FunctionFactoryDescriptor descriptor) {
+        SqlException ex = SqlException.position(node.position);
+        ex.put("unexpected argument for function: ");
+        ex.put(node.token);
+        ex.put(". expected args: ");
+        ex.put('(');
+        if (descriptor != null) {
+            for (int i = 0, n = descriptor.getSigCount(); i < n; i++) {
+                if (i > 0) {
+                    ex.put(',');
+                }
+                final int mask = descriptor.getArgTypeMask(i);
+                ex.put(ColumnType.nameOf(FunctionFactoryDescriptor.toType(mask)));
+                if (FunctionFactoryDescriptor.isArray(mask)) {
+                    ex.put("[]");
+                }
+                if (FunctionFactoryDescriptor.isConstant(mask)) {
+                    ex.put(" constant");
+                }
+            }
+        }
+        ex.put("). actual args: ");
+        ex.put('(');
+        if (args != null) {
+            for (int i = 0, n = args.size(); i < n; i++) {
+                if (i > 0) {
+                    ex.put(',');
+                }
+                Function arg = args.getQuick(i);
+                ex.put(ColumnType.nameOf(arg.getType()));
+                if (arg.isConstant()) {
+                    ex.put(" constant");
+                }
+            }
+        }
+        ex.put(')');
+        return ex;
+    }
+
     private Function checkAndCreateFunction(
             FunctionFactory factory,
             @Transient ObjList<Function> args,
@@ -381,7 +287,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                 args.setQuick(0, args.getQuick(1));
                 args.setQuick(1, tmp);
             }
-            function = factory.newInstance(args, position, configuration);
+            function = factory.newInstance(args, position, configuration, sqlExecutionContext);
         } catch (SqlException e) {
             throw e;
         } catch (Throwable e) {
@@ -392,12 +298,6 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         if (function == null) {
             LOG.error().$("NULL function").$(" [signature=").$(factory.getSignature()).$(",class=").$(factory.getClass().getName()).$(']').$();
             throw SqlException.position(position).put("bad function factory (NULL), check log");
-        }
-
-        if (function.isConstant()) {
-            try (function) {
-                return functionToConstant(position, function);
-            }
         }
         return function;
     }
@@ -436,6 +336,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                 return new DateColumn(node.position, index);
             case ColumnType.TIMESTAMP:
                 return new TimestampColumn(node.position, index);
+            case ColumnType.RECORD:
+                return new RecordColumn(node.position, index, metadata.getMetadata(index));
             default:
                 return new Long256Column(node.position, index);
         }
@@ -443,60 +345,69 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
     private Function createConstant(ExpressionNode node) throws SqlException {
 
-        if (isNullKeyword(node.token)) {
+        final int len = node.token.length();
+        final CharSequence tok = node.token;
+
+        if (isNullKeyword(tok)) {
             return new NullStrConstant(node.position);
         }
 
-        if (Chars.isQuoted(node.token)) {
-            if (node.token.length() == 3) {
+        if (Chars.isQuoted(tok)) {
+            if (len == 3) {
                 // this is 'x' - char
-                return new CharConstant(node.position, node.token.charAt(1));
+                return new CharConstant(node.position, tok.charAt(1));
             }
 
-            if (node.token.length() == 2) {
+            if (len == 2) {
                 // empty
                 return new CharConstant(node.position, (char) 0);
             }
-            return new StrConstant(node.position, node.token);
+            return new StrConstant(node.position, tok);
         }
 
-        if (SqlKeywords.isTrueKeyword(node.token)) {
+        // special case E'str'
+        // we treat it like normal string for now
+        if (len > 2 && tok.charAt(0) == 'E' && tok.charAt(1) == '\'') {
+            return new StrConstant(node.position, Chars.toString(tok, 2, len - 1));
+        }
+
+        if (SqlKeywords.isTrueKeyword(tok)) {
             return new BooleanConstant(node.position, true);
         }
 
-        if (SqlKeywords.isFalseKeyword(node.token)) {
+        if (SqlKeywords.isFalseKeyword(tok)) {
             return new BooleanConstant(node.position, false);
         }
 
         try {
-            return new IntConstant(node.position, Numbers.parseInt(node.token));
+            return new IntConstant(node.position, Numbers.parseInt(tok));
         } catch (NumericException ignore) {
         }
 
         try {
-            return new LongConstant(node.position, Numbers.parseLong(node.token));
+            return new LongConstant(node.position, Numbers.parseLong(tok));
         } catch (NumericException ignore) {
         }
 
         try {
-            return new DoubleConstant(node.position, Numbers.parseDouble(node.token));
+            return new DoubleConstant(node.position, Numbers.parseDouble(tok));
         } catch (NumericException ignore) {
         }
 
         try {
-            return new FloatConstant(node.position, Numbers.parseFloat(node.token));
+            return new FloatConstant(node.position, Numbers.parseFloat(tok));
         } catch (NumericException ignore) {
         }
 
         // type constant for 'CAST' operation
 
-        final int columnType = ColumnType.columnTypeOf(node.token);
+        final int columnType = ColumnType.columnTypeOf(tok);
 
         if (columnType > -1) {
             return Constants.getTypeConstant(columnType);
         }
 
-        throw SqlException.position(node.position).put("invalid constant: ").put(node.token);
+        throw SqlException.position(node.position).put("invalid constant: ").put(tok);
     }
 
     private Function createCursorFunction(ExpressionNode node) throws SqlException {
@@ -758,7 +669,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             ExpressionNode node,
             @Transient ObjList<Function> args
     ) throws SqlException {
-        ObjList<FunctionFactory> overload = functionFactoryCache.getOverloadList(node.token);
+        ObjList<FunctionFactoryDescriptor> overload = functionFactoryCache.getOverloadList(node.token);
         boolean isNegated = functionFactoryCache.isNegated(node.token);
         boolean isFlipped = functionFactoryCache.isFlipped(node.token);
         if (overload == null) {
@@ -773,7 +684,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         }
 
         FunctionFactory candidate = null;
-        String candidateSignature = null;
+        FunctionFactoryDescriptor candidateDescriptor = null;
         boolean candidateSigVarArgConst = false;
         int candidateSigArgCount = 0;
 
@@ -781,18 +692,21 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         int bestMatch = MATCH_NO_MATCH;
 
         for (int i = 0, n = overload.size(); i < n; i++) {
-            final FunctionFactory factory = overload.getQuick(i);
-            final String signature = factory.getSignature();
-            final int sigArgOffset = signature.indexOf('(') + 1;
-            int sigArgCount = signature.length() - 1 - sigArgOffset;
+            final FunctionFactoryDescriptor descriptor = overload.getQuick(i);
+            final FunctionFactory factory = descriptor.getFactory();
+            int sigArgCount = descriptor.getSigCount();
 
             final boolean sigVarArg;
             final boolean sigVarArgConst;
 
+            if (candidateDescriptor == null) {
+                candidateDescriptor = descriptor;
+            }
+
             if (sigArgCount > 0) {
-                char c = signature.charAt(sigArgOffset + sigArgCount - 1);
-                sigVarArg = getArgType(Character.toUpperCase(c)) == TypeEx.VAR_ARG;
-                sigVarArgConst = Character.isLowerCase(c);
+                final int lastSigArgMask = descriptor.getArgTypeMask(sigArgCount - 1);
+                sigVarArg = FunctionFactoryDescriptor.toType(lastSigArgMask) == ColumnType.VAR_ARG;
+                sigVarArgConst = FunctionFactoryDescriptor.isConstant(lastSigArgMask);
             } else {
                 sigVarArg = false;
                 sigVarArgConst = false;
@@ -816,15 +730,22 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
                 for (int k = 0; k < sigArgCount; k++) {
                     final Function arg = args.getQuick(k);
-                    final char c = signature.charAt(sigArgOffset + k);
+                    final int sigArgTypeMask = descriptor.getArgTypeMask(k);
 
-                    if (Character.isLowerCase(c) && !arg.isConstant()) {
-                        candidateSignature = signature;
+                    if (FunctionFactoryDescriptor.isConstant(sigArgTypeMask) && !arg.isConstant()) {
+                        candidateDescriptor = descriptor;
                         match = MATCH_NO_MATCH; // no match
                         break;
                     }
 
-                    final int sigArgType = getArgType(c);
+                    if ((FunctionFactoryDescriptor.isArray(sigArgTypeMask) && (arg instanceof ScalarFunction)) ||
+                            (!FunctionFactoryDescriptor.isArray(sigArgTypeMask) && !(arg instanceof ScalarFunction))) {
+                        candidateDescriptor = descriptor;
+                        match = MATCH_NO_MATCH; // no match
+                        break;
+                    }
+
+                    final int sigArgType = FunctionFactoryDescriptor.toType(sigArgTypeMask);
 
                     if (sigArgType == arg.getType()) {
                         switch (match) {
@@ -852,7 +773,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                                     && arg.isConstant()
                                     && Double.isNaN(arg.getDouble(null))
                                     && ((sigArgType == ColumnType.LONG) || (sigArgType == ColumnType.INT))
-                    ) && (!(arg instanceof TypeConstant) || (arg.getType() != sigArgType)));
+                    ) && (!(arg instanceof TypeConstant) || (arg.getType() != sigArgType)))
+                            || (arg.getType() == ColumnType.CHAR && sigArgType == ColumnType.STRING);
 
                     // can we use overload mechanism?
 
@@ -869,7 +791,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                         }
                     } else {
                         // types mismatch
-                        candidateSignature = signature;
+                        candidateDescriptor = descriptor;
                         match = MATCH_NO_MATCH;
                         break;
                     }
@@ -885,7 +807,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                     // have to ensure all args are indeed constant
 
                     candidate = factory;
-                    candidateSignature = signature;
+                    candidateDescriptor = descriptor;
                     candidateSigArgCount = sigArgCount;
                     candidateSigVarArgConst = sigVarArgConst;
 
@@ -911,13 +833,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
         if (candidate == null) {
             // no signature match
-            if (candidateSignature != null) {
-                final int sigArgOffset = candidateSignature.indexOf('(') + 1;
-                int sigArgCount = candidateSignature.length() - 1 - sigArgOffset;
-                throw invalidArgument(node, args, candidateSignature, sigArgOffset, sigArgCount);
-            } else {
-                throw invalidArgument(node, args, "", 0, 0);
-            }
+            throw invalidArgument(node, args, candidateDescriptor);
         }
 
         if (candidateSigVarArgConst) {
@@ -930,12 +846,9 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         }
 
         // substitute NaNs with appropriate types
-        final int sigArgOffset = candidateSignature.indexOf('(') + 1;
         for (int k = 0; k < candidateSigArgCount; k++) {
             final Function arg = args.getQuick(k);
-            final char c = candidateSignature.charAt(sigArgOffset + k);
-
-            final int sigArgType = getArgType(c);
+            final int sigArgType = FunctionFactoryDescriptor.toType(candidateDescriptor.getArgTypeMask(k));
             if (arg.getType() == ColumnType.DOUBLE && arg.isConstant() && Double.isNaN(arg.getDouble(null))) {
                 if (sigArgType == ColumnType.LONG) {
                     args.setQuick(k, new LongConstant(arg.getPosition(), Numbers.LONG_NaN));
@@ -945,11 +858,12 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             }
         }
 
-        LOG.info().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
+        LOG.debug().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
         return checkAndCreateFunction(candidate, args, node.position, configuration, isNegated, isFlipped);
     }
 
-    private Function functionToConstant(int position, Function function) {
+    private Function functionToConstant(Function function) {
+        final int position = function.getPosition();
         switch (function.getType()) {
             case ColumnType.INT:
                 if (function instanceof IntConstant) {
@@ -1037,11 +951,21 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         }
     }
 
-    public boolean isGroupBy(CharSequence token) {
-        return functionFactoryCache.isGroupBy(token);
+    @NotNull
+    private BindVariableService getBindVariableService() throws SqlException {
+        final BindVariableService bindVariableService = sqlExecutionContext.getBindVariableService();
+        if (bindVariableService == null) {
+            throw SqlException.$(0, "bind variable service is not provided");
+        }
+        return bindVariableService;
     }
 
-    public int getFunctionCount() {
-        return functionFactoryCache.getFunctionCount();
+    static {
+        for (int i = 0, n = SqlCompiler.sqlControlSymbols.size(); i < n; i++) {
+            FunctionFactoryCache.invalidFunctionNames.add(SqlCompiler.sqlControlSymbols.getQuick(i));
+        }
+        FunctionFactoryCache.invalidFunctionNameChars.add(' ');
+        FunctionFactoryCache.invalidFunctionNameChars.add('\"');
+        FunctionFactoryCache.invalidFunctionNameChars.add('\'');
     }
 }

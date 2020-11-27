@@ -132,6 +132,18 @@ public interface CairoConfiguration {
 
     int getSqlHashJoinValueMaxPages();
 
+    int getSqlAnalyticStorePageSize();
+
+    int getSqlAnalyticStoreMaxPages();
+
+    int getSqlAnalyticRowIdPageSize();
+
+    int getSqlAnalyticRowIdMaxPages();
+
+    int getSqlAnalyticTreeKeyPageSize();
+
+    int getSqlAnalyticTreeKeyMaxPages();
+
     long getSqlLatestByRowCount();
 
     int getSqlHashJoinLightValuePageSize();
@@ -184,4 +196,12 @@ public interface CairoConfiguration {
     boolean enableTestFactories();
 
     TelemetryConfiguration getTelemetryConfiguration();
+
+    long getAppendPageSize();
+
+    int getTableBlockWriterQueueSize();
+
+    default boolean isOutOfOrderEnabled() {
+        return false;
+    }
 }

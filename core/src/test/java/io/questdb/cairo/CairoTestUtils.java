@@ -36,7 +36,8 @@ public class CairoTestUtils {
                 model.getPath(),
                 model.getCairoCfg().getRoot(),
                 model,
-                model.getCairoCfg().getMkDirMode()
+                model.getCairoCfg().getMkDirMode(),
+                0
         );
     }
 
@@ -49,7 +50,21 @@ public class CairoTestUtils {
                 model.getCairoCfg().getRoot(),
                 model,
                 model.getCairoCfg().getMkDirMode(),
-                version
+                version,
+                0
+        );
+    }
+
+    public static void createTableWithVersionAndId(TableModel model, int version, int tableId) {
+        TableUtils.createTable(
+                model.getCairoCfg().getFilesFacade(),
+                model.getMem(),
+                model.getPath(),
+                model.getCairoCfg().getRoot(),
+                model,
+                model.getCairoCfg().getMkDirMode(),
+                version,
+                tableId
         );
     }
 

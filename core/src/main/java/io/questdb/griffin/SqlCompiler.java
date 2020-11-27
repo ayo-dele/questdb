@@ -54,54 +54,29 @@ public class SqlCompiler implements Closeable {
     public static final ObjList<String> sqlControlSymbols = new ObjList<>(8);
     private final static Log LOG = LogFactory.getLog(SqlCompiler.class);
     private static final IntList castGroups = new IntList();
-
-    static {
-        castGroups.extendAndSet(ColumnType.BOOLEAN, 2);
-        castGroups.extendAndSet(ColumnType.BYTE, 1);
-        castGroups.extendAndSet(ColumnType.SHORT, 1);
-        castGroups.extendAndSet(ColumnType.CHAR, 1);
-        castGroups.extendAndSet(ColumnType.INT, 1);
-        castGroups.extendAndSet(ColumnType.LONG, 1);
-        castGroups.extendAndSet(ColumnType.FLOAT, 1);
-        castGroups.extendAndSet(ColumnType.DOUBLE, 1);
-        castGroups.extendAndSet(ColumnType.DATE, 1);
-        castGroups.extendAndSet(ColumnType.TIMESTAMP, 1);
-        castGroups.extendAndSet(ColumnType.STRING, 3);
-        castGroups.extendAndSet(ColumnType.SYMBOL, 3);
-        castGroups.extendAndSet(ColumnType.BINARY, 4);
-
-        sqlControlSymbols.add("(");
-        sqlControlSymbols.add(";");
-        sqlControlSymbols.add(")");
-        sqlControlSymbols.add(",");
-        sqlControlSymbols.add("/*");
-        sqlControlSymbols.add("*/");
-        sqlControlSymbols.add("--");
-    }
-
+    protected final GenericLexer lexer;
+    protected final Path path = new Path();
+    protected final CairoEngine engine;
+    protected final CharSequenceObjHashMap<KeywordBasedExecutor> keywordBasedExecutors = new CharSequenceObjHashMap<>();
+    protected final CompiledQueryImpl compiledQuery = new CompiledQueryImpl();
     private final SqlOptimiser optimiser;
     private final SqlParser parser;
     private final ObjectPool<ExpressionNode> sqlNodePool;
     private final CharacterStore characterStore;
     private final ObjectPool<QueryColumn> queryColumnPool;
     private final ObjectPool<QueryModel> queryModelPool;
-    private final GenericLexer lexer;
     private final SqlCodeGenerator codeGenerator;
     private final CairoConfiguration configuration;
-    private final Path path = new Path();
     private final Path renamePath = new Path();
     private final AppendMemory mem = new AppendMemory();
     private final BytecodeAssembler asm = new BytecodeAssembler();
     private final MessageBus messageBus;
-    private final CairoEngine engine;
     private final ListColumnFilter listColumnFilter = new ListColumnFilter();
     private final EntityColumnFilter entityColumnFilter = new EntityColumnFilter();
     private final IntIntHashMap typeCast = new IntIntHashMap();
     private final ObjList<TableWriter> tableWriters = new ObjList<>();
     private final TableStructureAdapter tableStructureAdapter = new TableStructureAdapter();
     private final FunctionParser functionParser;
-    private final CharSequenceObjHashMap<KeywordBasedExecutor> keywordBasedExecutors = new CharSequenceObjHashMap<>();
-    private final CompiledQueryImpl compiledQuery = new CompiledQueryImpl();
     private final ExecutableMethod insertAsSelectMethod = this::insertAsSelect;
     private final ExecutableMethod createTableMethod = this::createTable;
     private final TextLoader textLoader;
@@ -117,7 +92,11 @@ public class SqlCompiler implements Closeable {
             try {
                 backupTable(nativeLPSZ, currentExecutionContext);
             } catch (CairoException ex) {
-                LOG.error().$("could not backup [path=").$(nativeLPSZ).$(", ex=").$(ex.getFlyweightMessage()).$(']').$();
+                LOG.error()
+                        .$("could not backup [path=").$(nativeLPSZ)
+                        .$(", ex=").$(ex.getFlyweightMessage())
+                        .$(", errno=").$(ex.getErrno())
+                        .$(']').$();
             }
         }
     };
@@ -157,6 +136,8 @@ public class SqlCompiler implements Closeable {
         keywordBasedExecutors.put("SET", this::compileSet);
         keywordBasedExecutors.put("begin", this::compileSet);
         keywordBasedExecutors.put("BEGIN", this::compileSet);
+        keywordBasedExecutors.put("commit", this::compileSet);
+        keywordBasedExecutors.put("COMMIT", this::compileSet);
         keywordBasedExecutors.put("rollback", this::compileSet);
         keywordBasedExecutors.put("ROLLBACK", this::compileSet);
         keywordBasedExecutors.put("drop", this::dropTable);
@@ -190,7 +171,6 @@ public class SqlCompiler implements Closeable {
                 queryModelPool,
                 postOrderTreeTraversalAlgo
         );
-
         this.textLoader = new TextLoader(engine);
     }
 
@@ -215,7 +195,46 @@ public class SqlCompiler implements Closeable {
                 || (from == ColumnType.STRING && to == ColumnType.SYMBOL)
                 || (from == ColumnType.SYMBOL && to == ColumnType.STRING)
                 || (from == ColumnType.CHAR && to == ColumnType.SYMBOL)
-                || (from == ColumnType.CHAR && to == ColumnType.STRING);
+                || (from == ColumnType.CHAR && to == ColumnType.STRING)
+                || (from == ColumnType.STRING && to == ColumnType.TIMESTAMP);
+    }
+
+    @Override
+    public void close() {
+        assert null == currentExecutionContext;
+        assert tableNames.isEmpty();
+        Misc.free(path);
+        Misc.free(renamePath);
+        Misc.free(textLoader);
+    }
+
+    @NotNull
+    public CompiledQuery compile(@NotNull CharSequence query, @NotNull SqlExecutionContext executionContext) throws SqlException {
+        clear();
+        //
+        // these are quick executions that do not require building of a model
+        //
+        lexer.of(query);
+
+        final CharSequence tok = SqlUtil.fetchNext(lexer);
+
+        if (tok == null) {
+            throw SqlException.$(0, "empty query");
+        }
+
+        final KeywordBasedExecutor executor = keywordBasedExecutors.get(tok);
+        if (executor == null) {
+            return compileUsingModel(executionContext);
+        }
+        return executor.execute(executionContext);
+    }
+
+    public CairoEngine getEngine() {
+        return engine;
+    }
+
+    public FunctionFactoryCache getFunctionFactoryCache() {
+        return functionParser.getFunctionFactoryCache();
     }
 
     // Creates data type converter.
@@ -257,6 +276,7 @@ public class SqlCompiler implements Closeable {
         int wPutSym = asm.poolMethod(TableWriter.Row.class, "putSym", "(ILjava/lang/CharSequence;)V");
         int wPutSymChar = asm.poolMethod(TableWriter.Row.class, "putSym", "(IC)V");
         int wPutStr = asm.poolMethod(TableWriter.Row.class, "putStr", "(ILjava/lang/CharSequence;)V");
+        int wPutTimestampStr = asm.poolMethod(TableWriter.Row.class, "putTimestamp", "(ILjava/lang/CharSequence;)V");
         int wPutStrChar = asm.poolMethod(TableWriter.Row.class, "putStr", "(IC)V");
         int wPutChar = asm.poolMethod(TableWriter.Row.class, "putChar", "(IC)V");
         int wPutBin = asm.poolMethod(TableWriter.Row.class, "putBin", "(ILio/questdb/std/BinarySequence;)V");
@@ -277,7 +297,7 @@ public class SqlCompiler implements Closeable {
         int n = toColumnFilter.getColumnCount();
         for (int i = 0; i < n; i++) {
 
-            final int toColumnIndex = toColumnFilter.getColumnIndex(i);
+            final int toColumnIndex = toColumnFilter.getColumnIndexFactored(i);
             // do not copy timestamp, it will be copied externally to this helper
 
             if (toColumnIndex == timestampIndex) {
@@ -609,10 +629,16 @@ public class SqlCompiler implements Closeable {
                     break;
                 case ColumnType.STRING:
                     asm.invokeInterface(rGetStr, 1);
-                    if (to.getColumnType(toColumnIndex) == ColumnType.SYMBOL) {
-                        asm.invokeVirtual(wPutSym);
-                    } else {
-                        asm.invokeVirtual(wPutStr);
+                    switch (to.getColumnType(toColumnIndex)) {
+                        case ColumnType.SYMBOL:
+                            asm.invokeVirtual(wPutSym);
+                            break;
+                        case ColumnType.TIMESTAMP:
+                            asm.invokeVirtual(wPutTimestampStr);
+                            break;
+                        default:
+                            asm.invokeVirtual(wPutStr);
+                            break;
                     }
                     break;
                 case ColumnType.BINARY:
@@ -674,40 +700,6 @@ public class SqlCompiler implements Closeable {
         return tok;
     }
 
-    @Override
-    public void close() {
-        assert null == currentExecutionContext;
-        assert tableNames.isEmpty();
-        Misc.free(path);
-        Misc.free(renamePath);
-        Misc.free(textLoader);
-    }
-
-    @NotNull
-    public CompiledQuery compile(@NotNull CharSequence query, @NotNull SqlExecutionContext executionContext) throws SqlException {
-        clear();
-        //
-        // these are quick executions that do not require building of a model
-        //
-        lexer.of(query);
-
-        final CharSequence tok = SqlUtil.fetchNext(lexer);
-
-        if (tok == null) {
-            throw SqlException.$(0, "empty query");
-        }
-
-        final KeywordBasedExecutor executor = keywordBasedExecutors.get(tok);
-        if (executor == null) {
-            return compileUsingModel(executionContext);
-        }
-        return executor.execute(executionContext);
-    }
-
-    public CairoEngine getEngine() {
-        return engine;
-    }
-
     private void alterSystemLockWriter(SqlExecutionContext executionContext) throws SqlException {
         final int tableNamePosition = lexer.getPosition();
         CharSequence tok = GenericLexer.unquote(expectToken(lexer, "table name"));
@@ -717,7 +709,9 @@ public class SqlCompiler implements Closeable {
                 throw SqlException.$(tableNamePosition, "could not lock, busy [table=`").put(tok).put("`]");
             }
         } catch (CairoException e) {
-            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage());
+            throw SqlException.position(tableNamePosition)
+                    .put(e.getFlyweightMessage())
+                    .put("[errno=").put(e.getErrno()).put(']');
         }
     }
 
@@ -728,7 +722,9 @@ public class SqlCompiler implements Closeable {
         try {
             engine.unlockWriter(tok);
         } catch (CairoException e) {
-            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage());
+            throw SqlException.position(tableNamePosition)
+                    .put(e.getFlyweightMessage())
+                    .put("[errno=").put(e.getErrno()).put(']');
         }
     }
 
@@ -822,19 +818,24 @@ public class SqlCompiler implements Closeable {
 
     private void alterTableAddColumn(int tableNamePosition, TableWriter writer) throws SqlException {
         // add columns to table
-        expectKeyword(lexer, "column");
+
+        CharSequence tok = SqlUtil.fetchNext(lexer);
+        //ignoring `column`
+        if (tok != null && !SqlKeywords.isColumnKeyword(tok)) {
+            lexer.unparse();
+        }
 
         do {
-            CharSequence tok = expectToken(lexer, "column name");
+            tok = expectToken(lexer, "'column' or column name");
 
             int index = writer.getMetadata().getColumnIndexQuiet(tok);
             if (index != -1) {
                 throw SqlException.$(lexer.lastTokenPosition(), "column '").put(tok).put("' already exists");
             }
 
-            CharSequence columnName = GenericLexer.immutableOf(tok);
+            CharSequence columnName = GenericLexer.immutableOf(GenericLexer.unquote(tok));
 
-            if (SqlKeywords.isInvalidColumnName(columnName)) {
+            if (!TableUtils.isValidColumnName(columnName)) {
                 throw SqlException.$(lexer.lastTokenPosition(), " new column name contains invalid characters");
             }
 
@@ -914,6 +915,16 @@ public class SqlCompiler implements Closeable {
                     indexValueBlockCapacity = configuration.getIndexValueBlockSize();
                 }
             } else {
+
+                //ignoring `NULL` and `NOT NULL`
+                if (tok != null && SqlKeywords.isNotKeyword(tok)) {
+                    tok = SqlUtil.fetchNext(lexer);
+                }
+
+                if (tok != null && SqlKeywords.isNullKeyword(tok)) {
+                    tok = SqlUtil.fetchNext(lexer);
+                }
+
                 cache = configuration.getDefaultSymbolCacheFlag();
                 indexValueBlockCapacity = configuration.getIndexValueBlockSize();
                 symbolCapacity = configuration.getDefaultSymbolCapacity();
@@ -931,7 +942,9 @@ public class SqlCompiler implements Closeable {
                 );
             } catch (CairoException e) {
                 LOG.error().$("Cannot add column '").$(writer.getName()).$('.').$(columnName).$("'. Exception: ").$((Sinkable) e).$();
-                throw SqlException.$(tableNamePosition, "Cannot add column [error=").put(e.getFlyweightMessage()).put(']');
+                throw SqlException.$(tableNamePosition, "could add column [error=").put(e.getFlyweightMessage())
+                        .put(", errno=").put(e.getErrno())
+                        .put(']');
             }
 
             if (tok == null) {
@@ -952,7 +965,8 @@ public class SqlCompiler implements Closeable {
             }
             w.addIndex(columnName, configuration.getIndexValueBlockSize());
         } catch (CairoException e) {
-            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage());
+            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage())
+                    .put("[errno=").put(e.getErrno()).put(']');
         }
     }
 
@@ -971,7 +985,8 @@ public class SqlCompiler implements Closeable {
 
             writer.changeCacheFlag(columnIndex, cache);
         } catch (CairoException e) {
-            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage());
+            throw SqlException.position(tableNamePosition).put(e.getFlyweightMessage())
+                    .put("[errno=").put(e.getErrno()).put(']');
         }
     }
 
@@ -979,7 +994,7 @@ public class SqlCompiler implements Closeable {
         RecordMetadata metadata = writer.getMetadata();
 
         do {
-            CharSequence tok = expectToken(lexer, "column name");
+            CharSequence tok = GenericLexer.unquote(expectToken(lexer, "column name"));
 
             if (metadata.getColumnIndexQuiet(tok) == -1) {
                 throw SqlException.invalidColumn(lexer.lastTokenPosition(), tok);
@@ -989,7 +1004,63 @@ public class SqlCompiler implements Closeable {
                 writer.removeColumn(tok);
             } catch (CairoException e) {
                 LOG.error().$("cannot drop column '").$(writer.getName()).$('.').$(tok).$("'. Exception: ").$((Sinkable) e).$();
-                throw SqlException.$(tableNamePosition, "cannot drop column. Try again later.");
+                throw SqlException.$(tableNamePosition, "cannot drop column. Try again later [errno=").put(e.getErrno()).put(']');
+            }
+
+            tok = SqlUtil.fetchNext(lexer);
+
+            if (tok == null) {
+                break;
+            }
+
+            if (!Chars.equals(tok, ',')) {
+                throw SqlException.$(lexer.lastTokenPosition(), "',' expected");
+            }
+        } while (true);
+    }
+
+    private void alterTableDropPartition(TableWriter writer) throws SqlException {
+        CharSequence tok = expectToken(lexer, "'list' or 'where'");
+        if (SqlKeywords.isListKeyword(tok)) {
+            alterTableDropPartitionByList(writer);
+        } else if (SqlKeywords.isWhereKeyword(tok)) {
+            ExpressionNode expr = parser.expr(lexer, (QueryModel) null);
+            String designatedTimestampColumnName = writer.getDesignatedTimestampColumnName();
+            if (designatedTimestampColumnName != null) {
+                GenericRecordMetadata metadata = new GenericRecordMetadata();
+                metadata.add(new TableColumnMetadata(designatedTimestampColumnName, ColumnType.TIMESTAMP, null));
+                Function function = functionParser.parseFunction(expr, metadata, currentExecutionContext);
+                if (function != null && function.getType() == ColumnType.BOOLEAN) {
+                    writer.removePartition(function);
+                } else {
+                    throw SqlException.$(lexer.lastTokenPosition(), "boolean expression expected");
+                }
+            } else {
+                throw SqlException.$(lexer.lastTokenPosition(), "this table does not have a designated timestamp column");
+            }
+        } else {
+            throw SqlException.$(lexer.lastTokenPosition(), "'list' or 'where' expected");
+        }
+    }
+
+    private void alterTableDropPartitionByList(TableWriter writer) throws SqlException {
+        do {
+            CharSequence tok = expectToken(lexer, "partition name");
+            if (Chars.equals(tok, ',')) {
+                throw SqlException.$(lexer.lastTokenPosition(), "partition name missing");
+            }
+            final CharSequence unquoted = GenericLexer.unquote(tok);
+
+            final long timestamp;
+            try {
+                timestamp = writer.partitionNameToTimestamp(unquoted);
+            } catch (CairoException e) {
+                throw SqlException.$(lexer.lastTokenPosition(), e.getFlyweightMessage())
+                        .put("[errno=").put(e.getErrno()).put(']');
+            }
+
+            if (!writer.removePartition(timestamp)) {
+                throw SqlException.$(lexer.lastTokenPosition(), "could not remove partition '").put(unquoted).put('\'');
             }
 
             tok = SqlUtil.fetchNext(lexer);
@@ -1008,7 +1079,7 @@ public class SqlCompiler implements Closeable {
         RecordMetadata metadata = writer.getMetadata();
 
         do {
-            CharSequence tok = expectToken(lexer, "current column name");
+            CharSequence tok = GenericLexer.unquote(expectToken(lexer, "current column name"));
             if (metadata.getColumnIndexQuiet(tok) == -1) {
                 throw SqlException.invalidColumn(lexer.lastTokenPosition(), tok);
             }
@@ -1019,7 +1090,7 @@ public class SqlCompiler implements Closeable {
                 throw SqlException.$(lexer.lastTokenPosition(), "'to' expected'");
             }
 
-            tok = expectToken(lexer, "new column name");
+            tok = GenericLexer.unquote(expectToken(lexer, "new column name"));
             if (Chars.equals(existingName, tok)) {
                 throw SqlException.$(lexer.lastTokenPosition(), "new column name is identical to existing name");
             }
@@ -1028,7 +1099,7 @@ public class SqlCompiler implements Closeable {
                 throw SqlException.$(lexer.lastTokenPosition(), " column already exists");
             }
 
-            if (SqlKeywords.isInvalidColumnName(tok)) {
+            if (!TableUtils.isValidColumnName(tok)) {
                 throw SqlException.$(lexer.lastTokenPosition(), " new column name contains invalid characters");
             }
 
@@ -1037,38 +1108,7 @@ public class SqlCompiler implements Closeable {
                 writer.renameColumn(existingName, newName);
             } catch (CairoException e) {
                 LOG.error().$("cannot rename column '").$(writer.getName()).$('.').$(tok).$("'. Exception: ").$((Sinkable) e).$();
-                throw SqlException.$(tableNamePosition, "cannot rename column. Try again later.");
-            }
-
-            tok = SqlUtil.fetchNext(lexer);
-
-            if (tok == null) {
-                break;
-            }
-
-            if (!Chars.equals(tok, ',')) {
-                throw SqlException.$(lexer.lastTokenPosition(), "',' expected");
-            }
-        } while (true);
-    }
-
-    private void alterTableDropPartition(TableWriter writer) throws SqlException {
-        do {
-            CharSequence tok = expectToken(lexer, "partition name");
-            if (Chars.equals(tok, ',')) {
-                throw SqlException.$(lexer.lastTokenPosition(), "partition name missing");
-            }
-            final CharSequence unquoted = GenericLexer.unquote(tok);
-
-            final long timestamp;
-            try {
-                timestamp = writer.partitionNameToTimestamp(unquoted);
-            } catch (CairoException e) {
-                throw SqlException.$(lexer.lastTokenPosition(), e.getFlyweightMessage());
-            }
-
-            if (!writer.removePartition(timestamp)) {
-                throw SqlException.$(lexer.lastTokenPosition(), "could not remove partition '").put(unquoted).put('\'');
+                throw SqlException.$(tableNamePosition, "cannot rename column. Try again later [errno=").put(e.getErrno()).put(']');
             }
 
             tok = SqlUtil.fetchNext(lexer);
@@ -1126,7 +1166,11 @@ public class SqlCompiler implements Closeable {
                 renamePath.trimTo(renameRootLen).$();
             }
         } catch (CairoException ex) {
-            LOG.info().$("could not backup [table=").$(tableName).$(", ex=").$(ex.getFlyweightMessage()).$(']').$();
+            LOG.info()
+                    .$("could not backup [table=").$(tableName)
+                    .$(", ex=").$(ex.getFlyweightMessage())
+                    .$(", errno=").$(ex.getErrno())
+                    .$(']').$();
             path.of(cachedTmpBackupRoot).concat(tableName).put(Files.SEPARATOR).$();
             if (!ff.rmdir(path)) {
                 LOG.error().$("coult not delete directory [path=").$(path).$(", errno=").$(ff.errno()).$(']').$();
@@ -1155,7 +1199,7 @@ public class SqlCompiler implements Closeable {
             throw CairoException.instance(ff.errno()).put("Could not create [dir=").put(path).put(']');
         }
 
-        TableReaderMetadata sourceMetaData = (TableReaderMetadata) reader.getMetadata();
+        TableReaderMetadata sourceMetaData = reader.getMetadata();
         int rootLen = path.length();
         try {
             mem.of(ff, path.trimTo(rootLen).concat(TableUtils.META_FILE_NAME).$(), ff.getPageSize());
@@ -1345,7 +1389,7 @@ public class SqlCompiler implements Closeable {
 
                 try {
                     if (createTableModel.getQueryModel() == null) {
-                        engine.creatTable(executionContext.getCairoSecurityContext(), mem, path, createTableModel);
+                        engine.createTable(executionContext.getCairoSecurityContext(), mem, path, createTableModel);
                     } else {
                         writer = createTableFromCursor(createTableModel, executionContext);
                     }
@@ -1370,7 +1414,7 @@ public class SqlCompiler implements Closeable {
             typeCast.clear();
             final RecordMetadata metadata = factory.getMetadata();
             validateTableModelAndCreateTypeCast(model, metadata, typeCast);
-            engine.creatTable(
+            engine.createTable(
                     executionContext.getCairoSecurityContext(),
                     mem,
                     path,
@@ -1380,6 +1424,7 @@ public class SqlCompiler implements Closeable {
             try {
                 return copyTableData(model.getName().token, cursor, metadata);
             } catch (CairoException e) {
+                LOG.error().$(e.getFlyweightMessage()).$(" [errno=").$(e.getErrno()).$(']').$();
                 if (removeTableDirectory(model)) {
                     throw e;
                 }
@@ -1405,7 +1450,7 @@ public class SqlCompiler implements Closeable {
      * has to be defined as reference to TIMESTAMP (type) column.
      *
      * @param executionModel   created from parsed sql.
-     * @param executionContext provides access to bind variables and athorization module
+     * @param executionContext provides access to bind variables and authorization module
      * @throws SqlException contains text of error and error position in SQL text.
      */
     private CompiledQuery createTableWithRetries(
@@ -1474,7 +1519,7 @@ public class SqlCompiler implements Closeable {
                 return true;
             }
             valueFunctions.add(function);
-            listColumnFilter.add(metadataColumnIndex);
+            listColumnFilter.add(metadataColumnIndex + 1);
             return false;
         }
 
@@ -1604,7 +1649,7 @@ public class SqlCompiler implements Closeable {
                     int fromType = cursorMetadata.getColumnType(i);
                     int toType = writerMetadata.getColumnType(index);
                     if (isAssignableFrom(toType, fromType)) {
-                        listColumnFilter.add(index);
+                        listColumnFilter.add(index + 1);
                     } else {
                         throw SqlException.inconvertibleTypes(
                                 model.getColumnPosition(i),
@@ -1787,6 +1832,58 @@ public class SqlCompiler implements Closeable {
         }
     }
 
+    private CompiledQuery sqlShow(SqlExecutionContext executionContext) throws SqlException {
+        final CharSequence tok = SqlUtil.fetchNext(lexer);
+        if (null != tok) {
+            if (isTablesKeyword(tok)) {
+                return compiledQuery.of(new TableListRecordCursorFactory(configuration.getFilesFacade(), configuration.getRoot()));
+            }
+            if (isColumnsKeyword(tok)) {
+                return sqlShowColumns(executionContext);
+            }
+
+            if (isTransactionKeyword(tok)) {
+                return sqlShowTransaction();
+            }
+
+            if (isStandardConformingStringsKeyword(tok)) {
+                return compiledQuery.of(new ShowStandardConformingStringsCursorFactory());
+            }
+        }
+
+        throw SqlException.position(lexer.lastTokenPosition()).put("expected 'tables' or 'columns'");
+    }
+
+    private CompiledQuery sqlShowColumns(SqlExecutionContext executionContext) throws SqlException {
+        CharSequence tok;
+        tok = SqlUtil.fetchNext(lexer);
+        if (null == tok || !isFromKeyword(tok)) {
+            throw SqlException.position(lexer.getPosition()).put("expected 'from'");
+        }
+        tok = SqlUtil.fetchNext(lexer);
+        if (null == tok) {
+            throw SqlException.position(lexer.getPosition()).put("expected a table name");
+        }
+        final CharSequence tableName = GenericLexer.assertNoDotsAndSlashes(GenericLexer.unquote(tok), lexer.lastTokenPosition());
+        int status = engine.getStatus(executionContext.getCairoSecurityContext(), path, tableName, 0, tableName.length());
+        if (status != TableUtils.TABLE_EXISTS) {
+            throw SqlException.position(lexer.lastTokenPosition()).put('\'').put(tableName).put("' is not a valid table");
+        }
+        return compiledQuery.of(new ShowColumnsRecordCursorFactory(tableName));
+    }
+
+    private CompiledQuery sqlShowTransaction() throws SqlException {
+        CharSequence tok = SqlUtil.fetchNext(lexer);
+        if (tok != null && isIsolationKeyword(tok)) {
+            tok = SqlUtil.fetchNext(lexer);
+            if (tok != null && isLevelKeyword(tok)) {
+                return compiledQuery.of(new ShowTransactionIsolationLevelCursorFactory());
+            }
+            throw SqlException.position(tok != null ? lexer.lastTokenPosition() : lexer.getPosition()).put("expected 'level'");
+        }
+        throw SqlException.position(tok != null ? lexer.lastTokenPosition() : lexer.getPosition()).put("expected 'isolation'");
+    }
+
     private CompiledQuery sqlTableBackup(SqlExecutionContext executionContext) throws SqlException {
         setupBackupRenamePath();
 
@@ -1821,58 +1918,6 @@ public class SqlCompiler implements Closeable {
         } finally {
             tableNames.clear();
         }
-    }
-
-    private CompiledQuery sqlShow(SqlExecutionContext executionContext) throws SqlException {
-        final CharSequence tok = SqlUtil.fetchNext(lexer);
-        if (null != tok) {
-            if (isTablesKeyword(tok)) {
-                return compiledQuery.of(new TableListRecordCursorFactory(configuration.getFilesFacade(), configuration.getRoot()));
-            }
-            if (isColumnsKeyword(tok)) {
-                return sqlShowColumns(executionContext);
-            }
-
-            if (isTransactionKeyword(tok)) {
-                return sqlShowTransaction();
-            }
-
-            if (isStandardConformingStringsKeyword(tok)) {
-                return compiledQuery.of(new ShowStandardConformingStringsCursorFactory());
-            }
-        }
-
-        throw SqlException.position(lexer.lastTokenPosition()).put("expected 'tables' or 'columns'");
-    }
-
-    private CompiledQuery sqlShowTransaction() throws SqlException {
-        CharSequence tok = SqlUtil.fetchNext(lexer);
-        if (tok != null && isIsolationKeyword(tok)) {
-            tok = SqlUtil.fetchNext(lexer);
-            if (tok != null && isLevelKeyword(tok)) {
-                return compiledQuery.of(new ShowTransactionIsolationLevelCursorFactory());
-            }
-            throw SqlException.position(tok != null ? lexer.lastTokenPosition() : lexer.getPosition()).put("expected 'level'");
-        }
-        throw SqlException.position(tok != null ? lexer.lastTokenPosition() : lexer.getPosition()).put("expected 'isolation'");
-    }
-
-    private CompiledQuery sqlShowColumns(SqlExecutionContext executionContext) throws SqlException {
-        CharSequence tok;
-        tok = SqlUtil.fetchNext(lexer);
-        if (null == tok || !isFromKeyword(tok)) {
-            throw SqlException.position(lexer.getPosition()).put("expected 'from'");
-        }
-        tok = SqlUtil.fetchNext(lexer);
-        if (null == tok) {
-            throw SqlException.position(lexer.getPosition()).put("expected a table name");
-        }
-        final CharSequence tableName = GenericLexer.assertNoDotsAndSlashes(GenericLexer.unquote(tok), lexer.lastTokenPosition());
-        int status = engine.getStatus(executionContext.getCairoSecurityContext(), path, tableName, 0, tableName.length());
-        if (status != TableUtils.TABLE_EXISTS) {
-            throw SqlException.position(lexer.lastTokenPosition()).put('\'').put(tableName).put("' is not a valid table");
-        }
-        return compiledQuery.of(new ShowColumnsRecordCursorFactory(tableName));
     }
 
     private void tableExistsOrFail(int position, CharSequence tableName, SqlExecutionContext executionContext) throws SqlException {
@@ -2031,7 +2076,7 @@ public class SqlCompiler implements Closeable {
     }
 
     @FunctionalInterface
-    private interface KeywordBasedExecutor {
+    protected interface KeywordBasedExecutor {
         CompiledQuery execute(SqlExecutionContext executionContext) throws SqlException;
     }
 
@@ -2129,5 +2174,31 @@ public class SqlCompiler implements Closeable {
             this.typeCast = typeCast;
             return this;
         }
+    }
+
+    static {
+        castGroups.extendAndSet(ColumnType.BOOLEAN, 2);
+        castGroups.extendAndSet(ColumnType.BYTE, 1);
+        castGroups.extendAndSet(ColumnType.SHORT, 1);
+        castGroups.extendAndSet(ColumnType.CHAR, 1);
+        castGroups.extendAndSet(ColumnType.INT, 1);
+        castGroups.extendAndSet(ColumnType.LONG, 1);
+        castGroups.extendAndSet(ColumnType.FLOAT, 1);
+        castGroups.extendAndSet(ColumnType.DOUBLE, 1);
+        castGroups.extendAndSet(ColumnType.DATE, 1);
+        castGroups.extendAndSet(ColumnType.TIMESTAMP, 1);
+        castGroups.extendAndSet(ColumnType.STRING, 3);
+        castGroups.extendAndSet(ColumnType.SYMBOL, 3);
+        castGroups.extendAndSet(ColumnType.BINARY, 4);
+
+        sqlControlSymbols.add("(");
+        sqlControlSymbols.add(";");
+        sqlControlSymbols.add(")");
+        sqlControlSymbols.add(",");
+        sqlControlSymbols.add("/*");
+        sqlControlSymbols.add("*/");
+        sqlControlSymbols.add("--");
+        sqlControlSymbols.add("[");
+        sqlControlSymbols.add("]");
     }
 }

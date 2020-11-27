@@ -26,7 +26,7 @@ package io.questdb.cairo.pool;
 
 import io.questdb.cairo.*;
 import io.questdb.cairo.pool.ex.EntryLockedException;
-import io.questdb.cairo.pool.ex.EntryUnavailableException;
+import io.questdb.cairo.EntryUnavailableException;
 import io.questdb.cairo.pool.ex.PoolClosedException;
 import io.questdb.std.Chars;
 import io.questdb.std.FilesFacade;
@@ -240,7 +240,6 @@ public class WriterPoolTest extends AbstractCairoTest {
                 Assert.assertEquals(0, pool.countFreeWriters());
                 Assert.assertNotNull(x);
                 Assert.assertTrue(x.isOpen());
-                Assert.assertSame(x, pool.get("z"));
                 pool.close();
             } finally {
                 x.close();
@@ -423,7 +422,6 @@ public class WriterPoolTest extends AbstractCairoTest {
                 Assert.assertEquals(0, pool.countFreeWriters());
                 Assert.assertNotNull(x);
                 Assert.assertTrue(x.isOpen());
-                Assert.assertSame(x, pool.get("z"));
             } finally {
                 x.close();
             }
@@ -752,8 +750,8 @@ public class WriterPoolTest extends AbstractCairoTest {
             } catch (CairoException ignore) {
             }
 
-            Assert.assertEquals(1, pool.size());
-            Assert.assertEquals(1, pool.getBusyCount());
+            Assert.assertEquals(0, pool.size());
+            Assert.assertEquals(0, pool.getBusyCount());
 
             pool.releaseInactive();
             Assert.assertEquals(0, pool.size());

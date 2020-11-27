@@ -32,7 +32,7 @@ import io.questdb.std.Long256;
 import io.questdb.std.Misc;
 import io.questdb.std.str.CharSink;
 
-public class NamedParameterLinkFunction implements Function {
+public class NamedParameterLinkFunction implements ScalarFunction {
     private final String variableName;
     private final int type;
     private final int position;
@@ -107,11 +107,6 @@ public class NamedParameterLinkFunction implements Function {
     @Override
     public Long256 getLong256B(Record rec) {
         return getBase().getLong256B(rec);
-    }
-
-    @Override
-    public RecordMetadata getMetadata() {
-        return getBase().getMetadata();
     }
 
     @Override

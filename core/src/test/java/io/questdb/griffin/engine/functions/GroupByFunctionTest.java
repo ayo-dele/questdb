@@ -28,7 +28,6 @@ import io.questdb.cairo.ArrayColumnTypes;
 import io.questdb.cairo.map.MapValue;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursorFactory;
-import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.std.BinarySequence;
 import io.questdb.std.Long256;
 import io.questdb.std.str.CharSink;
@@ -53,6 +52,11 @@ public class GroupByFunctionTest {
         }
 
         @Override
+        public int getArrayLength() {
+            return 0;
+        }
+
+        @Override
         public BinarySequence getBin(Record rec) {
             return null;
         }
@@ -69,6 +73,11 @@ public class GroupByFunctionTest {
 
         @Override
         public byte getByte(Record rec) {
+            return 0;
+        }
+
+        @Override
+        public char getChar(Record rec) {
             return 0;
         }
 
@@ -98,22 +107,22 @@ public class GroupByFunctionTest {
         }
 
         @Override
-        public RecordMetadata getMetadata() {
+        public void getLong256(Record rec, CharSink sink) {
+        }
+
+        @Override
+        public Long256 getLong256A(Record rec) {
+            return null;
+        }
+
+        @Override
+        public Long256 getLong256B(Record rec) {
             return null;
         }
 
         @Override
         public int getPosition() {
             return 0;
-        }
-
-        @Override
-        public char getChar(Record rec) {
-            return 0;
-        }
-
-        @Override
-        public void getLong256(Record rec, CharSink sink) {
         }
 
         @Override
@@ -132,7 +141,21 @@ public class GroupByFunctionTest {
         }
 
         @Override
+        public CharSequence getStr(Record rec, int arrayIndex) {
+            return null;
+        }
+
+        @Override
         public void getStr(Record rec, CharSink sink) {
+        }
+
+        @Override
+        public void getStr(Record rec, CharSink sink, int arrayIndex) {
+        }
+
+        @Override
+        public Record getRecord(Record rec) {
+            return null;
         }
 
         @Override
@@ -141,7 +164,17 @@ public class GroupByFunctionTest {
         }
 
         @Override
+        public CharSequence getStrB(Record rec, int arrayIndex) {
+            return null;
+        }
+
+        @Override
         public int getStrLen(Record rec) {
+            return 0;
+        }
+
+        @Override
+        public int getStrLen(Record rec, int arrayIndex) {
             return 0;
         }
 
@@ -153,16 +186,6 @@ public class GroupByFunctionTest {
         @Override
         public long getTimestamp(Record rec) {
             return 0;
-        }
-
-        @Override
-        public Long256 getLong256A(Record rec) {
-            return null;
-        }
-
-        @Override
-        public Long256 getLong256B(Record rec) {
-            return null;
         }
 
         @Override

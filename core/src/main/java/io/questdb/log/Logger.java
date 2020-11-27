@@ -31,6 +31,7 @@ import io.questdb.std.Misc;
 import io.questdb.std.Numbers;
 import io.questdb.std.Sinkable;
 import io.questdb.std.microtime.MicrosecondClock;
+import io.questdb.std.microtime.TimestampFormatUtils;
 import io.questdb.std.str.CharSink;
 
 import java.io.File;
@@ -198,6 +199,18 @@ class Logger implements LogRecord, Log {
     @Override
     public LogRecord ts() {
         sink().putISODate(clock.getTicks());
+        return this;
+    }
+
+    @Override
+    public LogRecord microTime(long x) {
+        TimestampFormatUtils.appendDateTimeUSec(sink(), x);
+        return this;
+    }
+
+    @Override
+    public LogRecord $256(long a, long b, long c, long d) {
+        Numbers.appendLong256(a, b, c, d, sink());
         return this;
     }
 

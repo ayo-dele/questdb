@@ -35,11 +35,11 @@ import io.questdb.mp.QueueConsumer;
 import io.questdb.mp.RingQueue;
 import io.questdb.mp.SCSequence;
 import io.questdb.mp.SynchronizedJob;
+import io.questdb.std.Long256;
 import io.questdb.std.Misc;
 import io.questdb.std.NanosecondClock;
 import io.questdb.std.microtime.MicrosecondClock;
 import io.questdb.std.str.Path;
-import io.questdb.std.str.StringSink;
 import io.questdb.tasks.TelemetryTask;
 import org.jetbrains.annotations.Nullable;
 
@@ -52,12 +52,12 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
     private final static CharSequence configTableName = "telemetry_config";
     private final MicrosecondClock clock;
     private final CairoConfiguration configuration;
-    private final boolean enabled;
-    private final TableWriter writer;
-    private final QueueConsumer<TelemetryTask> myConsumer = this::newRowConsumer;
-    private final TableWriter writerConfig;
     private final RingQueue<TelemetryTask> queue;
     private final SCSequence subSeq;
+    private boolean enabled;
+    private TableWriter writer;
+    private final QueueConsumer<TelemetryTask> myConsumer = this::newRowConsumer;
+    private TableWriter writerConfig;
 
     public TelemetryJob(CairoEngine engine) throws SqlException {
         this(engine, null);
@@ -75,7 +75,6 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
             sqlExecutionContext.with(AllowAllCairoSecurityContext.INSTANCE, null, null);
 
             try (final Path path = new Path()) {
-
                 if (getTableStatus(path, tableName) == TableUtils.TABLE_DOES_NOT_EXIST) {
                     compiler.compile("CREATE TABLE " + tableName + " (created timestamp, event short, origin short) timestamp(created)", sqlExecutionContext);
                 }
@@ -88,18 +87,29 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
             try {
                 this.writer = new TableWriter(configuration, tableName);
             } catch (CairoException ex) {
-                LOG.error().$("could not open [table=").utf8(tableName).$("]").$();
-                throw ex;
+                LOG.error()
+                        .$("could not open [table=`").utf8(tableName)
+                        .$("`, ex=").$(ex.getFlyweightMessage())
+                        .$(", errno=").$(ex.getErrno())
+                        .$(']').$();
+                enabled = false;
+                return;
             }
 
-            // todo: close writerConfig. We currently keep it opened to prevent users from modifying the table.
+            // todo: close writerConfig. We currently keep it opened to prevent users from
+            // modifying the table.
             // Once we have a permission system, we can use that instead.
             try {
                 this.writerConfig = new TableWriter(configuration, configTableName);
             } catch (CairoException ex) {
                 Misc.free(writer);
-                LOG.error().$("could not open [table=").utf8(configTableName).$("]").$();
-                throw ex;
+                LOG.error()
+                        .$("could not open [table=`").utf8(configTableName)
+                        .$("`, ex=").$(ex.getFlyweightMessage())
+                        .$(", errno=").$(ex.getErrno())
+                        .$(']').$();
+                enabled = false;
+                return;
             }
 
             final CompiledQuery cc = compiler.compile(configTableName + " LIMIT -1", sqlExecutionContext);
@@ -109,37 +119,57 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
                     final Record record = cursor.getRecord();
                     final boolean _enabled = record.getBool(1);
 
+                    // if the configuration changed to enable or disable telemetry
+                    // we need to update the table to reflect that
                     if (enabled != _enabled) {
-                        final StringSink sink = new StringSink();
                         final TableWriter.Row row = writerConfig.newRow();
-                        record.getLong256(0, sink);
-                        row.putLong256(0, sink);
+                        final Long256 l256 = record.getLong256A(0);
+                        row.putLong256(0, l256);
                         row.putBool(1, enabled);
                         row.append();
                         writerConfig.commit();
+                        LOG.info()
+                                .$("instance config changes [id=").$256(l256.getLong0(), l256.getLong1(), 0, 0)
+                                .$(", enabled=").$(this.enabled)
+                                .$(']').$();
+                    } else {
+                        final Long256 l256 = record.getLong256A(0);
+                        LOG.error()
+                                .$("instance [id=").$256(l256.getLong0(), l256.getLong1(), 0, 0)
+                                .$(", enabled=").$(this.enabled)
+                                .$(']').$();
                     }
                 } else {
+                    // if there are no record for telemetry id we need to create one using clocks
                     final MicrosecondClock clock = configuration.getMicrosecondClock();
                     final NanosecondClock nanosecondClock = configuration.getNanosecondClock();
                     final TableWriter.Row row = writerConfig.newRow();
-                    row.putLong256(0, nanosecondClock.getTicks(), clock.getTicks(), 0, 0);
+                    final long a = nanosecondClock.getTicks();
+                    final long b = clock.getTicks();
+                    row.putLong256(0, a, b, 0, 0);
                     row.putBool(1, enabled);
                     row.append();
                     writerConfig.commit();
+                    LOG.info()
+                            .$("new instance [id=").$256(a, b, 0, 0)
+                            .$(", enabled=").$(this.enabled)
+                            .$(']').$();
                 }
             }
 
-            newRow(TelemetryEvent.UP);
+            newRow(Telemetry.SYSTEM_EVENT_UP);
         }
     }
 
     @Override
     public void close() {
-        runSerially();
-        newRow(TelemetryEvent.DOWN);
-        writer.commit();
-        Misc.free(writer);
-        Misc.free(writerConfig);
+        if (enabled) {
+            runSerially();
+            newRow(Telemetry.SYSTEM_EVENT_DOWN);
+            writer.commit();
+            Misc.free(writer);
+            Misc.free(writerConfig);
+        }
     }
 
     public int getTableStatus(Path path, CharSequence tableName) {
@@ -168,10 +198,13 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
             try {
                 final TableWriter.Row row = writer.newRow(clock.getTicks());
                 row.putShort(1, event);
-                row.putShort(2, TelemetryOrigin.INTERNAL);
+                row.putShort(2, Telemetry.ORIGIN_INTERNAL);
                 row.append();
             } catch (CairoException e) {
-                LOG.error().$("Could not insert a new row in telemetry table [error=").$(e.getMessage()).$("]").$();
+                LOG.error()
+                        .$("Could not insert a new row in telemetry table [error=").$(e.getFlyweightMessage())
+                        .$(", errno=").$(e.getErrno())
+                        .$(']').$();
             }
         }
     }
@@ -183,7 +216,10 @@ public class TelemetryJob extends SynchronizedJob implements Closeable {
             row.putShort(2, telemetryRow.origin);
             row.append();
         } catch (CairoException e) {
-            LOG.error().$("Could not insert a new row in telemetry table [error=").$(e.getMessage()).$("]").$();
+            LOG.error()
+                    .$("Could not insert a new row in telemetry table [error=").$(e.getFlyweightMessage())
+                    .$(", errno=").$(e.getErrno())
+                    .$(']').$();
         }
     }
 }
