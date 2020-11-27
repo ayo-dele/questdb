@@ -208,7 +208,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             for (int n = 0; n < argCount; n++) {
                 mutableArgs.setQuick(n, stack.poll());
             }
-            stack.push(createFunction(node, mutableArgs));
+            stack.push(inferType(node, mutableArgs));
         }
     }
 
@@ -415,11 +415,12 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         return new CursorFunction(node.position, sqlCodeGenerator.generate(node.queryModel, sqlExecutionContext));
     }
 
+
     public Function inferType(
             ExpressionNode node,
             @Transient ObjList<Function> args
     ) throws SqlException {
-        ObjList<FunctionFactory> overload = functionFactoryCache.getOverloadList(node.token);
+        ObjList<FunctionFactoryDescriptor> overload = functionFactoryCache.getOverloadList(node.token);
         boolean isNegated = functionFactoryCache.isNegated(node.token);
         boolean isFlipped = functionFactoryCache.isFlipped(node.token);
 
@@ -441,35 +442,37 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             if (arg.getType() == ColumnType.STRING && arg instanceof StrConstant) { //character constant ?
                 CharSequence str = arg.getStr(null);
                 if (str.length() == 1 && str.charAt(0) == '?') {
-                    sparseBindVariablesArgs.add(i, 1);
+                    sparseBindVariablesArgs.set(i, 1);
                 }
             }
         }
 
-        ObjList<FunctionFactory> candidates = new ObjList<>(overload.size());  //TODO refactor - allocating
+        ObjList<FunctionFactoryDescriptor> candidates = new ObjList<>(overload.size());  //TODO refactor - allocating
         FunctionFactory candidate = null;
-        String candidateSignature = null;
+        FunctionFactoryDescriptor candidateDescriptor = null;
         boolean candidateSigVarArgConst = false;
         int candidateSigArgCount = 0;
+
         int fuzzyMatchCount = 0;
         int bestMatch = MATCH_NO_MATCH;
 
 
         for (int i = 0, n = overload.size(); i < n; i++) {
-            final FunctionFactory factory = overload.getQuick(i);
-            final String signature = factory.getSignature();
-            final int sigArgOffset = signature.indexOf('(') + 1;
-            int sigArgCount = signature.length() - 1 - sigArgOffset;
+            final FunctionFactoryDescriptor descriptor = overload.getQuick(i);
+            final FunctionFactory factory = descriptor.getFactory();
+            int sigArgCount = descriptor.getSigCount();
 
             final boolean sigVarArg;
-            final boolean sigVarArgConst;
+
+            if (candidateDescriptor == null) {
+                candidateDescriptor = descriptor;
+            }
 
             if (sigArgCount > 0) {
-                char c = signature.charAt(sigArgOffset + sigArgCount - 1);
-                sigVarArg = getArgType(Character.toUpperCase(c)) == TypeEx.VAR_ARG;
+                final int lastSigArgMask = descriptor.getArgTypeMask(sigArgCount - 1);
+                sigVarArg = FunctionFactoryDescriptor.toType(lastSigArgMask) == ColumnType.VAR_ARG;
             } else {
                 sigVarArg = false;
-                sigVarArgConst = false;
             }
 
             if (sigVarArg) {
@@ -495,15 +498,22 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                         continue;
                     }
                     final Function arg = args.getQuick(k);
-                    final char c = signature.charAt(sigArgOffset + k);
+                    final int sigArgTypeMask = descriptor.getArgTypeMask(k);
 
-                    if (Character.isLowerCase(c) && !arg.isConstant()) {
-                        candidateSignature = signature;
+                    if (FunctionFactoryDescriptor.isConstant(sigArgTypeMask) && !arg.isConstant()) {
+                        candidateDescriptor = descriptor;
                         match = MATCH_NO_MATCH; // no match
                         break;
                     }
 
-                    final int sigArgType = getArgType(c);
+                    if ((FunctionFactoryDescriptor.isArray(sigArgTypeMask) && (arg instanceof ScalarFunction)) ||
+                            (!FunctionFactoryDescriptor.isArray(sigArgTypeMask) && !(arg instanceof ScalarFunction))) {
+                        candidateDescriptor = descriptor;
+                        match = MATCH_NO_MATCH; // no match
+                        break;
+                    }
+
+                    final int sigArgType = FunctionFactoryDescriptor.toType(sigArgTypeMask);
 
                     if (sigArgType == arg.getType()) {
                         switch (match) {
@@ -537,7 +547,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                                     && arg.isConstant()
                                     && Double.isNaN(arg.getDouble(null))
                                     && ((sigArgType == ColumnType.LONG) || (sigArgType == ColumnType.INT))
-                    ) && (!(arg instanceof TypeConstant) || (arg.getType() != sigArgType)));
+                    ) && (!(arg instanceof TypeConstant) || (arg.getType() != sigArgType)))
+                            || (arg.getType() == ColumnType.CHAR && sigArgType == ColumnType.STRING);
 
                     // can we use overload mechanism?
 
@@ -554,7 +565,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                         }
                     } else {
                         // types mismatch
-                        candidateSignature = signature;
+                        candidateDescriptor = descriptor;
                         match = MATCH_NO_MATCH;
                         break;
                     }
@@ -565,10 +576,10 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                 }
 
                 if (match == MATCH_EXACT_MATCH) {
-                    candidates.add(factory);
+                    candidates.add(descriptor);
                 } else if (candidates.size() == 0 && match >= bestMatch) {
                     bestMatch = match;
-                    candidate = factory;
+                    candidateDescriptor = descriptor;
                 }
             }
         }
@@ -576,18 +587,17 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         // -------- end of overload loop
 
         //TODO - move this  below the filtering loop?
-        if (candidates.size() == 0 && candidate != null) {
-            candidates.add(candidate);
+        if (candidates.size() == 0 && candidateDescriptor != null) {
+            candidates.add(candidateDescriptor);
         }
 
         //--------- start of candidate filtering group
         IntList candidateArgs = new IntList(argCount);//TODO refactor - allocating
         candidateArgs.setAll(argCount, -1);
         for (int i = 0, n = candidates.size(); i < n; i++) {
-            final FunctionFactory factory = candidates.getQuick(i);
-            final String signature = factory.getSignature();
-            final int sigArgOffset = signature.indexOf('(') + 1;
-            int sigArgCount = signature.length() - 1 - sigArgOffset;
+            final FunctionFactoryDescriptor descriptor = candidates.getQuick(i);
+            final FunctionFactory factory = descriptor.getFactory();
+            int sigArgCount = descriptor.getSigCount();
 
             int match = MATCH_NO_MATCH;
             for (int j = 0; j < sigArgCount; j++) {
@@ -595,8 +605,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                     continue;
                 }
 
-                final char c = signature.charAt(sigArgOffset + j);
-                final int sigArgType = getArgType(c);
+                final int sigArgMask = descriptor.getArgTypeMask(j);
+                final int sigArgType = FunctionFactoryDescriptor.toType(sigArgMask);
 
                 if (sigArgType > candidateArgs.get(j)) {
                     candidateArgs.set(j, sigArgType);
@@ -609,11 +619,11 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
 
             if (match == MATCH_EXACT_MATCH) {
-                char c = signature.charAt(sigArgOffset + sigArgCount - 1);
-                final boolean sigVarArgConst = getArgType(Character.toUpperCase(c)) == TypeEx.VAR_ARG;
+                final int lastSigArgMask = descriptor.getArgTypeMask(sigArgCount - 1);
+                final boolean sigVarArgConst = FunctionFactoryDescriptor.toType(lastSigArgMask) == ColumnType.VAR_ARG;
 
+                candidateDescriptor = descriptor;
                 candidate = factory;
-                candidateSignature = signature;
                 candidateSigArgCount = sigArgCount;
                 candidateSigVarArgConst = sigVarArgConst;
             }
@@ -627,13 +637,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
         if (candidate == null) {
             // no signature match
-            if (candidateSignature != null) {
-                final int sigArgOffset = candidateSignature.indexOf('(') + 1;
-                int sigArgCount = candidateSignature.length() - 1 - sigArgOffset;
-                throw invalidArgument(node, args, candidateSignature, sigArgOffset, sigArgCount);
-            } else {
-                throw invalidArgument(node, args, "", 0, 0);
-            }
+            throw invalidArgument(node, args, candidateDescriptor);
         }
 
         if (candidateSigVarArgConst) {
@@ -646,12 +650,9 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         }
 
         // substitute NaNs with appropriate types
-        final int sigArgOffset = candidateSignature.indexOf('(') + 1;
         for (int k = 0; k < candidateSigArgCount; k++) {
             final Function arg = args.getQuick(k);
-            final char c = candidateSignature.charAt(sigArgOffset + k);
-
-            final int sigArgType = getArgType(c);
+            final int sigArgType = FunctionFactoryDescriptor.toType(candidateDescriptor.getArgTypeMask(k));
             if (arg.getType() == ColumnType.DOUBLE && arg.isConstant() && Double.isNaN(arg.getDouble(null))) {
                 if (sigArgType == ColumnType.LONG) {
                     args.setQuick(k, new LongConstant(arg.getPosition(), Numbers.LONG_NaN));
@@ -661,7 +662,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             }
         }
 
-        LOG.info().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
+        LOG.debug().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
         return checkAndCreateFunction(candidate, args, node.position, configuration, isNegated, isFlipped);
     }
 

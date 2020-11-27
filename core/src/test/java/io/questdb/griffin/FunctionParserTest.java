@@ -371,7 +371,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqDouble);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -392,7 +392,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqLong);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -413,7 +413,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqInt);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -436,7 +436,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqLong);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -455,7 +455,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqLong);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -474,7 +474,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqDouble);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
@@ -492,7 +492,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         functions.add(eqDouble);
 
         final GenericRecordMetadata metadata = new GenericRecordMetadata();
-        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN));
+        metadata.add(new TableColumnMetadata("a", ColumnType.BOOLEAN, null));
         FunctionParser functionParser = createFunctionParser();
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
