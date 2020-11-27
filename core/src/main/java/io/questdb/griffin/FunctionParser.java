@@ -208,7 +208,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             for (int n = 0; n < argCount; n++) {
                 mutableArgs.setQuick(n, stack.poll());
             }
-            stack.push(inferType(node, mutableArgs));
+            stack.push(createFunction(node, mutableArgs));
         }
     }
 
