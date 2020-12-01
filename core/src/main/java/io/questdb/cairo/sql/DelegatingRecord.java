@@ -22,22 +22,8 @@
  *
  ******************************************************************************/
 
-package io.questdb.log;
+package io.questdb.cairo.sql;
 
-public interface Log {
-    LogRecord debug();
-
-    LogRecord error();
-
-    LogRecord info();
-
-    LogRecord advisory();
-
-    boolean isDebugEnabled();
-
-    LogRecord xerror();
-
-    LogRecord xinfo();
-
-    LogRecord xadvisory();
+public interface DelegatingRecord extends Record {
+    void of(Record base);
 }
