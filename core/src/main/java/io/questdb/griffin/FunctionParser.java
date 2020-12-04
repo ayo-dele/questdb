@@ -26,14 +26,9 @@ package io.questdb.griffin;
 
 import io.questdb.cairo.CairoConfiguration;
 import io.questdb.cairo.ColumnType;
-import io.questdb.cairo.sql.Function;
-import io.questdb.cairo.sql.RecordCursorFactory;
-import io.questdb.cairo.sql.RecordMetadata;
-import io.questdb.cairo.sql.ScalarFunction;
+import io.questdb.cairo.sql.*;
 import io.questdb.griffin.engine.functions.CursorFunction;
-import io.questdb.griffin.engine.functions.bind.BindVariableService;
-import io.questdb.griffin.engine.functions.bind.IndexedParameterLinkFunction;
-import io.questdb.griffin.engine.functions.bind.NamedParameterLinkFunction;
+import io.questdb.griffin.engine.functions.bind.*;
 import io.questdb.griffin.engine.functions.columns.*;
 import io.questdb.griffin.engine.functions.constants.*;
 import io.questdb.griffin.model.ExpressionNode;
@@ -73,7 +68,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
     public Function createIndexParameter(int variableIndex, ExpressionNode node) throws SqlException {
         Function function = getBindVariableService().getFunction(variableIndex);
         if (function == null) {
-            throw SqlException.position(node.position).put("no bind variable defined at index ").put(variableIndex);
+            return new IndexedParameterUnknownTypeLinkFunction(variableIndex, node.position);
         }
         return new IndexedParameterLinkFunction(variableIndex, function.getType(), node.position);
     }
@@ -81,7 +76,7 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
     public Function createNamedParameter(ExpressionNode node) throws SqlException {
         Function function = getBindVariableService().getFunction(node.token);
         if (function == null) {
-            throw SqlException.position(node.position).put("undefined bind variable: ").put(node.token);
+            return new NamedParameterUnknownTypeLinkFunction(Chars.toString(node.token), node.position);
         }
         return new NamedParameterLinkFunction(Chars.toString(node.token), function.getType(), node.position);
     }
@@ -203,12 +198,27 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                     break;
             }
         } else {
+//            int indexedVariableCount = 0;
+//            int namedVariableCount = 0;
+//            if (sqlExecutionContext != null) {
+//                BindVariableService bindVariableService;
+//                bindVariableService = sqlExecutionContext.getBindVariableService();
+//                indexedVariableCount = bindVariableService.getIndexedVariableCount();
+//                namedVariableCount = bindVariableService.getNamedVariableCount();
+//            }
             mutableArgs.clear();
             mutableArgs.setPos(argCount);
             for (int n = 0; n < argCount; n++) {
                 mutableArgs.setQuick(n, stack.poll());
             }
-            stack.push(createFunction(node, mutableArgs));
+            stack.push(inferType(node, mutableArgs, sqlExecutionContext));
+//            if (indexedVariableCount > 0) {
+//                stack.push(inferType(node, mutableArgs));
+//            } else if (namedVariableCount > 0) {
+//                stack.push(inferType(node, mutableArgs));
+//            } else {
+//                stack.push(createFunction(node, mutableArgs));
+//            }
         }
     }
 
@@ -418,7 +428,8 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
     public Function inferType(
             ExpressionNode node,
-            @Transient ObjList<Function> args
+            @Transient ObjList<Function> args,
+            SqlExecutionContext sqlExecutionContext
     ) throws SqlException {
         ObjList<FunctionFactoryDescriptor> overload = functionFactoryCache.getOverloadList(node.token);
         boolean isNegated = functionFactoryCache.isNegated(node.token);
@@ -439,12 +450,18 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         sparseBindVariablesArgs.setAll(argCount, 0);
         for (int i = 0; i < argCount; i++) {
             final Function arg = args.getQuick(i);
-            if (arg.getType() == ColumnType.STRING && arg instanceof StrConstant) { //character constant ?
+            if (arg.getType() == ColumnType.STRING && arg instanceof StrConstant) { //TODO still needed
                 CharSequence str = arg.getStr(null);
-                if (str.length() == 1 && str.charAt(0) == '?') {
+                if (str != null && str.length() == 1 && str.charAt(0) == '?') {
                     sparseBindVariablesArgs.set(i, 1);
                 }
+            } else if (arg instanceof UnknownTypeFunction) {
+                sparseBindVariablesArgs.set(i, 1);
             }
+        }
+
+        if (sparseBindVariablesArgs.binarySearch(1) < 0) {
+            return createFunction(node, args);
         }
 
         ObjList<FunctionFactoryDescriptor> candidates = new ObjList<>(overload.size());  //TODO refactor - allocating
@@ -627,7 +644,6 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                 candidateSigArgCount = sigArgCount;
                 candidateSigVarArgConst = sigVarArgConst;
             }
-
         }
 
         if (fuzzyMatchCount > 1) {
@@ -638,6 +654,42 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         if (candidate == null) {
             // no signature match
             throw invalidArgument(node, args, candidateDescriptor);
+        }
+
+        //populate bindVariableService
+        for (int i = 0; i < sparseBindVariablesArgs.size(); i++) {
+            if (sparseBindVariablesArgs.getQuick(i) == 1) {
+                if (args.getQuick(i) instanceof NamedParameterUnknownTypeLinkFunction) {
+                    int argTypeMask = candidateDescriptor.getArgTypeMask(i);
+                    NamedParameterUnknownTypeLinkFunction func = (NamedParameterUnknownTypeLinkFunction) args.getQuick(i);
+                    String variableName = func.getVariableName();
+                    switch (argTypeMask) {
+                        case ColumnType.LONG:
+                            func.setType(ColumnType.LONG);
+                            sqlExecutionContext.getBindVariableService().setLong(Chars.toString(variableName, 1, variableName.length()), Numbers.LONG_NaN);
+                            break;
+                        case ColumnType.INT:
+                            func.setType(ColumnType.INT);
+                            sqlExecutionContext.getBindVariableService().setInt(Chars.toString(variableName, 1, variableName.length()), Numbers.INT_NaN);
+                            break;
+                    }
+                }
+                if (args.getQuick(i) instanceof IndexedParameterUnknownTypeLinkFunction) {
+                    int argTypeMask = candidateDescriptor.getArgTypeMask(i);
+                    IndexedParameterUnknownTypeLinkFunction func = (IndexedParameterUnknownTypeLinkFunction) args.getQuick(i);
+                    int variableIndex = func.getVariableIndex();
+                    switch (argTypeMask) {
+                        case ColumnType.LONG:
+                            func.setType(ColumnType.LONG);
+                            sqlExecutionContext.getBindVariableService().setLong(variableIndex, Numbers.LONG_NaN);
+                            break;
+                        case ColumnType.INT:
+                            func.setType(ColumnType.INT);
+                            sqlExecutionContext.getBindVariableService().setInt(variableIndex, Numbers.INT_NaN);
+                            break;
+                    }
+                }
+            }
         }
 
         if (candidateSigVarArgConst) {

@@ -123,6 +123,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     private final BindVariableSetter strSetter = this::setStrBindVariable;
     private final BindVariableSetter noopSetter = this::setNoopBindVariable;
     private final ObjList<ColumnAppender> columnAppenders = new ObjList<>();
+    private final ObjList<ColumnAppender> columnBinaryAppenders = new ObjList<>();
     private final WeakObjectPool<IntList> bindVarTypesPool = new WeakObjectPool<>(IntList::new, 16);
     private final WeakObjectPool<NamedStatementWrapper> namedStatementWrapperPool = new WeakObjectPool<>(NamedStatementWrapper::new, 16);
     private final DateLocale dateLocale;
@@ -131,6 +132,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     //    private final ObjList<TypeAdapter> probes = new ObjList<>();
     private final DirectByteCharSequence parameterHolder = new DirectByteCharSequence();
     private final IntList parameterFormats = new IntList();
+    private final IntList resultFormats = new IntList();
     private final DirectCharSink utf8Sink;
     private final TypeManager typeManager;
     private final AssociativeCache<InsertStatement> insertStatements = new AssociativeCache<>(8, 8);
@@ -156,6 +158,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     private long rowCount;
     private boolean isEmptyQuery;
     private int transactionState = NO_TRANSACTION;
+    private final DirectCharSink queuedResponseSequence = new DirectCharSink(128);
 
     public PGConnectionContext(
             CairoEngine engine,
@@ -194,6 +197,7 @@ public class PGConnectionContext implements IOContext, Mutable {
         this.dateLocale = configuration.getDefaultDateLocale();
         this.sqlExecutionContext = new SqlExecutionContextImpl(engine, workerCount, messageBus);
         populateAppender();
+        populateBinaryAppenders();
     }
 
     public static int getInt(long address) {
@@ -263,6 +267,8 @@ public class PGConnectionContext implements IOContext, Mutable {
         clearRecvBuffer();
         insertStatements.clear();
         namedStatementMap.clear();
+        resultFormats.clear();
+        queuedResponseSequence.clear();
     }
 
     public void clearWriters() {
@@ -281,6 +287,7 @@ public class PGConnectionContext implements IOContext, Mutable {
         Unsafe.free(recvBuffer, recvBufferSize);
         Misc.free(path);
         Misc.free(utf8Sink);
+        Misc.free(queuedResponseSequence);
     }
 
     @Override
@@ -630,7 +637,12 @@ public class PGConnectionContext implements IOContext, Mutable {
         final long offset = responseAsciiSink.skip();
         responseAsciiSink.putNetworkShort((short) columnCount);
         for (int i = 0; i < columnCount; i++) {
-            columnAppenders.getQuick(metadata.getColumnType(i)).append(record, i);
+            if (resultFormats.size() > 0 && resultFormats.get(i) == 1) {
+                ColumnAppender binaryAppender = columnBinaryAppenders.getQuick(metadata.getColumnType(i));
+                binaryAppender.append(record, i);
+            } else {
+                columnAppenders.getQuick(metadata.getColumnType(i)).append(record, i);
+            }
         }
         responseAsciiSink.putLen(offset);
     }
@@ -675,6 +687,187 @@ public class PGConnectionContext implements IOContext, Mutable {
         }
     }
 
+
+    //--------------------------
+    private void appendCharBinaryColumn(Record record, int columnIndex) {
+        long a = responseAsciiSink.skip();
+        responseAsciiSink.put(record.getChar(columnIndex));
+        responseAsciiSink.putLenEx(a);
+    }
+
+    private void appendBinBinaryColumn(Record record, int i) throws SqlException {
+        BinarySequence sequence = record.getBin(i);
+        if (sequence == null) {
+            responseAsciiSink.setNullValue();
+        } else {
+            // if length is above max we will error out the result set
+            long blobSize = sequence.length();
+            if (blobSize < maxBlobSizeOnQuery) {
+                responseAsciiSink.put(sequence);
+            } else {
+                throw SqlException.position(0)
+                        .put("blob is too large [blobSize=").put(blobSize)
+                        .put(", max=").put(maxBlobSizeOnQuery)
+                        .put(", columnIndex=").put(i)
+                        .put(']');
+            }
+        }
+    }
+
+    private void appendBooleanBinaryColumn(Record record, int columnIndex) {
+        responseAsciiSink.putNetworkInt(Byte.BYTES);
+        responseAsciiSink.put(record.getBool(columnIndex) ? 't' : 'f');
+    }
+
+    private void appendByteBinaryColumn(Record record, int columnIndex) {
+        long a = responseAsciiSink.skip();
+        responseAsciiSink.put((byte) 0);
+        responseAsciiSink.put(record.getByte(columnIndex));
+        responseAsciiSink.putLenEx(a);
+    }
+
+    //binary format?
+    private void appendDateBinaryColumn(Record record, int columnIndex) {
+        final long longValue = record.getDate(columnIndex);
+        if (longValue == Numbers.LONG_NaN) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            PG_DATE_TIME_Z_FORMAT.format(longValue, null, null, responseAsciiSink);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendDoubleBinaryColumn(Record record, int columnIndex) {
+        final double doubleValue = record.getDouble(columnIndex);
+        if (Double.isNaN(doubleValue)) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            long data = Double.doubleToRawLongBits(doubleValue);
+            byte[] b = new byte[]{
+                    (byte) ((data >> 56) & 0xff),
+                    (byte) ((data >> 48) & 0xff),
+                    (byte) ((data >> 40) & 0xff),
+                    (byte) ((data >> 32) & 0xff),
+                    (byte) ((data >> 24) & 0xff),
+                    (byte) ((data >> 16) & 0xff),
+                    (byte) ((data >> 8) & 0xff),
+                    (byte) ((data >> 0) & 0xff),
+            };
+            responseAsciiSink.put(b);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendFloatBinaryColumn(Record record, int columnIndex) {
+        final float floatValue = record.getFloat(columnIndex);
+        if (Float.isNaN(floatValue)) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            int data = Float.floatToRawIntBits(floatValue);
+            byte[] b = new byte[]{
+                    (byte) ((data >> 24) & 0xff),
+                    (byte) ((data >> 16) & 0xff),
+                    (byte) ((data >> 8) & 0xff),
+                    (byte) ((data >> 0) & 0xff),
+            };
+            responseAsciiSink.put(b);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendIntBinaryCol(Record record, int i) {
+        final int intValue = record.getInt(i);
+        if (intValue == Numbers.INT_NaN) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            byte[] b = new byte[]{
+                    (byte) (intValue >>> 24),
+                    (byte) (intValue >>> 16),
+                    (byte) (intValue >>> 8),
+                    (byte) intValue};
+            responseAsciiSink.put(b);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendLongBinaryColumn(Record record, int columnIndex) {
+        final long longValue = record.getLong(columnIndex);
+        if (longValue == Numbers.LONG_NaN) {
+            responseAsciiSink.setNullValue();
+        } else {
+            byte[] b = new byte[]{
+                    (byte) (longValue >> 56),
+                    (byte) (longValue >> 48),
+                    (byte) (longValue >> 40),
+                    (byte) (longValue >> 32),
+                    (byte) (longValue >> 24),
+                    (byte) (longValue >> 16),
+                    (byte) (longValue >> 8),
+                    (byte) longValue};
+            final long a = responseAsciiSink.skip();
+            responseAsciiSink.put(b);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendLong256BinaryColumn(Record record, int columnIndex) {
+        final Long256 long256Value = record.getLong256A(columnIndex);
+        final long a = responseAsciiSink.skip();
+        Numbers.appendLong256(long256Value.getLong0(), long256Value.getLong1(), long256Value.getLong2(), long256Value.getLong3(), responseAsciiSink);
+        responseAsciiSink.putLenEx(a);
+    }
+
+    private void appendShortBinaryColumn(Record record, int columnIndex) {
+        final long a = responseAsciiSink.skip();
+        short shortValue = record.getShort(columnIndex);
+        byte[] b = new byte[]{
+                (byte) (shortValue >> 8),
+                (byte) shortValue};
+        responseAsciiSink.put(b);
+        responseAsciiSink.putLenEx(a);
+    }
+
+    private void appendStrBinaryColumn(Record record, int columnIndex) {
+        final CharSequence strValue = record.getStr(columnIndex);
+        if (strValue == null) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            responseAsciiSink.encodeUtf8(strValue);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendSymbolBinaryColumn(Record record, int columnIndex) {
+        final CharSequence strValue = record.getSym(columnIndex);
+        if (strValue == null) {
+            responseAsciiSink.setNullValue();
+        } else {
+            final long a = responseAsciiSink.skip();
+            responseAsciiSink.encodeUtf8(strValue);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    private void appendTimestampBinaryColumn(Record record, int i) {
+        long a;
+        long longValue = record.getTimestamp(i);
+        if (longValue == Numbers.LONG_NaN) {
+            responseAsciiSink.setNullValue();
+        } else {
+            a = responseAsciiSink.skip();
+            TimestampFormatUtils.PG_TIMESTAMP_FORMAT.format(longValue, null, null, responseAsciiSink);
+            responseAsciiSink.putLenEx(a);
+        }
+    }
+
+    //----------------------
+
+
     private void bindParameterFormats(long lo,
                                       long msgLimit,
                                       short parameterFormatCount) throws BadProtocolException {
@@ -691,7 +884,22 @@ public class PGConnectionContext implements IOContext, Mutable {
         }
     }
 
-    private void bindParameterValues(
+    private void populateResultFormats(long lo,
+                                       long msgLimit,
+                                       short parameterFormatCount) throws BadProtocolException {
+        if (lo + Short.BYTES * parameterFormatCount > msgLimit) {
+            LOG.error().$("invalid format code count [value=").$(parameterFormatCount).$(']').$();
+            throw BadProtocolException.INSTANCE;
+        }
+
+        for (int i = 0; i < parameterFormatCount; i++) {
+            final short code = getShort(lo + i * Short.BYTES);
+            resultFormats.add(code);
+        }
+    }
+
+
+    private long bindParameterValues(
             long lo,
             long msgLimit,
             short parameterFormatCount,
@@ -752,6 +960,7 @@ public class PGConnectionContext implements IOContext, Mutable {
             bindVariableSetters.getQuick(j * 2).set(j, lo, valueLen);
             lo += valueLen;
         }
+        return lo;
     }
 
     private void checkNotTrue(boolean check, String message) throws BadProtocolException {
@@ -1078,9 +1287,11 @@ public class PGConnectionContext implements IOContext, Mutable {
                 processBind(msgLo, msgLimit, compiler, factoryCache);
                 break;
             case 'E': // execute
+                processResponseQueue();
                 processExecute();
                 break;
             case 'S': // sync
+                processResponseQueue();
                 prepareReadyForQuery();
                 // fall thru
             case 'H': // flush
@@ -1100,6 +1311,31 @@ public class PGConnectionContext implements IOContext, Mutable {
             default:
                 LOG.error().$("unknown message [type=").$(type).$(']').$();
                 throw BadProtocolException.INSTANCE;
+        }
+    }
+
+    private void processResponseQueue() throws PeerDisconnectedException, PeerIsSlowToReadException {
+        int messageCount = queuedResponseSequence.length();
+        for (int i = 0; i < messageCount; i++) {
+            prepareResponse(queuedResponseSequence.charAt(i));
+        }
+        queuedResponseSequence.clear();
+    }
+
+    private void prepareResponse(char message) throws PeerDisconnectedException, PeerIsSlowToReadException {
+        switch ((byte) message) {
+            case MESSAGE_TYPE_PARSE_COMPLETE:
+                prepareParseComplete();
+                break;
+            case MESSAGE_TYPE_BIND_COMPLETE:
+                prepareBindComplete();
+                break;
+            case MESSAGE_TYPE_ROW_DESCRIPTION:
+                prepareRowDescriptionResponse();
+                break;
+            case MESSAGE_TYPE_COMMAND_COMPLETE:
+                processExecute();
+                break;
         }
     }
 
@@ -1254,7 +1490,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     }
 
     private void prepareRowDescription() {
-        final RecordMetadata metadata = currentFactory.getMetadata();
+        final RecordMetadata metadata = getMetadata();
         ResponseAsciiSink sink = responseAsciiSink;
         sink.put(MESSAGE_TYPE_ROW_DESCRIPTION);
         final long addr = sink.skip();
@@ -1277,9 +1513,17 @@ public class PGConnectionContext implements IOContext, Mutable {
             sink.putNetworkInt(-1);
             // this is special behaviour for binary fields to prevent binary data being hex encoded on the wire
             // format code
-            sink.putNetworkShort((short) (columnType == ColumnType.BINARY ? 1 : 0)); // format code
+            if (resultFormats.size() == 0) {
+                sink.putNetworkShort((short) 0); // format code
+            } else {
+                sink.putNetworkShort((short) resultFormats.get(i)); // format code
+            }
         }
         sink.putLen(addr);
+    }
+
+    private RecordMetadata getMetadata() {
+        return currentFactory != null ? currentFactory.getMetadata() : currentInsertStatement.getMetadata();
     }
 
     private void prepareSslResponse() {
@@ -1328,14 +1572,40 @@ public class PGConnectionContext implements IOContext, Mutable {
         //we now have all parameter counts, validate them
         validateParameterCounts(parameterFormatCount, parameterValueCount, bindVariableSetters.size() / 2);
 
+        lo += Short.BYTES;
         if (parameterValueCount > 0) {
-            lo += Short.BYTES;
-            bindParameterValues(lo, msgLimit, parameterFormatCount, parameterValueCount, bindVariableSetters);
+            lo = bindParameterValues(lo, msgLimit, parameterFormatCount, parameterValueCount, bindVariableSetters);
+        }
+
+        //result format
+        resultFormats.clear();
+        checkNotTrue(lo + Short.BYTES > msgLimit, "could not read result format code count");
+        short resultFormatCount = getShort(lo);
+        lo += Short.BYTES;
+        if (resultFormatCount != 0) {
+            populateResultFormats(lo, msgLimit, resultFormatCount);
         }
 
         compileQuery(compiler, factoryCache);
 
-        prepareBindComplete();
+        addToResponseQueue(MESSAGE_TYPE_BIND_COMPLETE);
+    }
+
+    private void populateBinaryAppenders() {
+        columnBinaryAppenders.extendAndSet(ColumnType.INT, this::appendIntBinaryCol);
+        columnBinaryAppenders.extendAndSet(ColumnType.STRING, this::appendStrBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.SYMBOL, this::appendSymbolBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.LONG, this::appendLongBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.SHORT, this::appendShortBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.DOUBLE, this::appendDoubleBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.FLOAT, this::appendFloatBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.TIMESTAMP, this::appendTimestampBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.DATE, this::appendDateBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.BOOLEAN, this::appendBooleanBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.BYTE, this::appendByteBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.BINARY, this::appendBinBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.CHAR, this::appendCharBinaryColumn);
+        columnBinaryAppenders.extendAndSet(ColumnType.LONG256, this::appendLong256BinaryColumn);
     }
 
     private void processClose(long lo, long msgLimit) throws BadProtocolException {
@@ -1379,7 +1649,11 @@ public class PGConnectionContext implements IOContext, Mutable {
         checkNotTrue(hi == -1, "bad portal name length [msgType='D']");
         configureContextFromNamedStatement(lo, hi, compiler, factoryCache);
 
-        if (currentFactory != null) {
+        addToResponseQueue(MESSAGE_TYPE_ROW_DESCRIPTION);
+    }
+
+    private void prepareRowDescriptionResponse() {
+        if (currentFactory != null || currentInsertStatement != null) {
             prepareRowDescription();
         } else {
             prepareNoDataMessage();
@@ -1589,7 +1863,11 @@ public class PGConnectionContext implements IOContext, Mutable {
             wrapper.queryText = cachedQueryText.toImmutable();
             wrapper.bindVariableTypes = bindVariableTypes;
         }
-        prepareParseComplete();
+        addToResponseQueue(MESSAGE_TYPE_PARSE_COMPLETE);
+    }
+
+    private void addToResponseQueue(byte messageTypeParseComplete) {
+        queuedResponseSequence.put((char) messageTypeParseComplete);
     }
 
     private void processQuery(
@@ -1934,6 +2212,14 @@ public class PGConnectionContext implements IOContext, Mutable {
         public CharSink put(byte b) {
             ensureCapacity(Byte.BYTES);
             Unsafe.getUnsafe().putByte(sendBufferPtr++, b);
+            return this;
+        }
+
+        public CharSink put(byte[] b) {
+            ensureCapacity(Byte.BYTES);
+            for (int i = 0; i < b.length; i++) {
+                Unsafe.getUnsafe().putByte(sendBufferPtr++, b[i]);
+            }
             return this;
         }
 

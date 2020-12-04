@@ -24,21 +24,10 @@
 
 package io.questdb.cairo.sql;
 
-import io.questdb.griffin.SqlExecutionContext;
+public interface UnknownTypeFunction extends Function {
 
-import java.io.Closeable;
+    default void setType(int type) {
+        throw new UnsupportedOperationException();
+    }
 
-public interface InsertStatement extends Closeable {
-    @Override
-    void close();
-
-    InsertMethod createMethod(SqlExecutionContext executionContext);
-
-    long getStructureVersion();
-
-    CharSequence getTableName();
-
-    void detachWriter();
-
-    RecordMetadata getMetadata();
 }

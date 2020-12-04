@@ -34,6 +34,7 @@ public class InsertStatementImpl implements InsertStatement {
     private final VirtualRecord virtualRecord;
     private final SqlCompiler.RecordToRowCopier copier;
     private final Function timestampFunction;
+    private final RecordMetadata metadata;
     private final RowFactory rowFactory;
     private final long structureVersion;
     private final String tableName;
@@ -46,13 +47,14 @@ public class InsertStatementImpl implements InsertStatement {
             VirtualRecord virtualRecord,
             SqlCompiler.RecordToRowCopier copier,
             Function timestampFunction,
-            long structureVersion
-    ) {
+            long structureVersion,
+            RecordMetadata metadata) {
         this.engine = engine;
         this.tableName = tableName;
         this.virtualRecord = virtualRecord;
         this.copier = copier;
         this.timestampFunction = timestampFunction;
+        this.metadata = metadata;
         if (timestampFunction != null) {
             rowFactory = this::getRowWithTimestamp;
         } else {
@@ -109,6 +111,10 @@ public class InsertStatementImpl implements InsertStatement {
         if (timestampFunction != null) {
             timestampFunction.init(null, executionContext);
         }
+    }
+
+    public RecordMetadata getMetadata() {
+        return metadata;
     }
 
     @FunctionalInterface

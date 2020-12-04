@@ -376,7 +376,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -397,7 +397,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -418,7 +418,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -441,7 +441,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -460,7 +460,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqLongFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -479,7 +479,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqDoubleFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }
@@ -497,7 +497,7 @@ public class FunctionParserTest extends BaseFunctionFactoryTest {
         ObjList<Function> args = new ObjList<>();
         args.add(new IntColumn(0, 0));
         args.add(new StrConstant(1, "?"));
-        Function function = functionParser.inferType(expr("x=1"), args);
+        Function function = functionParser.inferType(expr("x=1"), args, sqlExecutionContext);
 
         Assert.assertEquals(function.getClass().getName(), EqIntFunctionFactory.class.getName() + "$Func"); // there must be a better way
     }

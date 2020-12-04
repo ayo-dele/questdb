@@ -2995,6 +2995,29 @@ public class SqlCodeGeneratorTest extends AbstractGriffinTest {
     }
 
     @Test
+    public void testNamedBindVariableInWhere2() throws Exception {
+        assertMemoryLeak(() -> {
+
+            final CairoConfiguration configuration = new DefaultCairoConfiguration(root);
+            try (
+                    CairoEngine engine = new CairoEngine(configuration);
+                    SqlCompiler compiler = new SqlCompiler(engine)
+            ) {
+                bindVariableService.clear();
+                try (RecordCursorFactory factory = compiler.compile("select x from long_sequence(100) where x = :var", sqlExecutionContext).getRecordCursorFactory()) {
+                    assertCursor(
+                            "x\n",
+                            factory,
+                            true,
+                            true,
+                            false
+                    );
+                }
+            }
+        });
+    }
+
+    @Test
     public void testOrderBy() throws Exception {
         final String expected = "a\tb\tk\n" +
                 "11.427984775756228\t\t1970-01-01T00:00:00.000000Z\n" +
