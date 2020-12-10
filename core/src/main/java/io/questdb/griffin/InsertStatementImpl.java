@@ -27,6 +27,7 @@ package io.questdb.griffin;
 import io.questdb.cairo.CairoEngine;
 import io.questdb.cairo.TableWriter;
 import io.questdb.cairo.sql.*;
+import io.questdb.std.IntList;
 import io.questdb.std.Misc;
 import io.questdb.std.ObjList;
 
@@ -34,7 +35,7 @@ public class InsertStatementImpl implements InsertStatement {
     private final VirtualRecord virtualRecord;
     private final SqlCompiler.RecordToRowCopier copier;
     private final Function timestampFunction;
-    private final RecordMetadata metadata;
+    private final IntList bindVariableTypes;
     private final RowFactory rowFactory;
     private final long structureVersion;
     private final String tableName;
@@ -48,13 +49,13 @@ public class InsertStatementImpl implements InsertStatement {
             SqlCompiler.RecordToRowCopier copier,
             Function timestampFunction,
             long structureVersion,
-            RecordMetadata metadata) {
+            IntList bindVariableTypes) {
         this.engine = engine;
         this.tableName = tableName;
         this.virtualRecord = virtualRecord;
         this.copier = copier;
         this.timestampFunction = timestampFunction;
-        this.metadata = metadata;
+        this.bindVariableTypes = bindVariableTypes;
         if (timestampFunction != null) {
             rowFactory = this::getRowWithTimestamp;
         } else {
@@ -113,8 +114,8 @@ public class InsertStatementImpl implements InsertStatement {
         }
     }
 
-    public RecordMetadata getMetadata() {
-        return metadata;
+    public IntList getBindVariableTypes() {
+        return bindVariableTypes;
     }
 
     @FunctionalInterface

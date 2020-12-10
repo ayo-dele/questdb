@@ -1545,11 +1545,13 @@ public class SqlCompiler implements Closeable {
         try (TableReader reader = engine.getReader(executionContext.getCairoSecurityContext(), name.token, TableUtils.ANY_TABLE_VERSION)) {
             final long structureVersion = reader.getVersion();
             final RecordMetadata metadata = reader.getMetadata();
+            IntList bindVariableTypes = new IntList();
             final int writerTimestampIndex = metadata.getTimestampIndex();
             final CharSequenceHashSet columnSet = model.getColumnSet();
             final int columnSetSize = columnSet.size();
             Function timestampFunction = null;
             listColumnFilter.clear();
+            int bindVariableCount = 0;
             if (columnSetSize > 0) {
                 listColumnFilter.clear();
                 valueFunctions = new ObjList<>(columnSetSize);
@@ -1562,7 +1564,9 @@ public class SqlCompiler implements Closeable {
 
                     final Function function = functionParser.parseFunction(model.getColumnValues().getQuick(i), GenericRecordMetadata.EMPTY, executionContext);
                     if (function instanceof UnknownTypeFunction) {
-                        ((UnknownTypeFunction) function).setType(metadata.getColumnType(index));
+                        int columnType = metadata.getColumnType(index);
+                        FunctionParser.populateTypeInfo(executionContext, columnType, function);
+                        bindVariableTypes.add(columnType);
                     }
                     if (functionIsTimestamp(model, valueFunctions, metadata, writerTimestampIndex, i, index, function)) {
                         timestampFunction = function;
@@ -1599,9 +1603,7 @@ public class SqlCompiler implements Closeable {
 
             VirtualRecord record = new VirtualRecord(valueFunctions);
             RecordToRowCopier copier = assembleRecordToRowCopier(asm, record, metadata, listColumnFilter);
-            GenericRecordMetadata copyOfMetadata = new GenericRecordMetadata();
-            GenericRecordMetadata.copyColumns(metadata, copyOfMetadata);
-            return compiledQuery.ofInsert(new InsertStatementImpl(engine, Chars.toString(name.token), record, copier, timestampFunction, structureVersion, copyOfMetadata));
+            return compiledQuery.ofInsert(new InsertStatementImpl(engine, Chars.toString(name.token), record, copier, timestampFunction, structureVersion, bindVariableTypes));
         } catch (SqlException e) {
             Misc.freeObjList(valueFunctions);
             throw e;

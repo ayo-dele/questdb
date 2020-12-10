@@ -76,6 +76,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     private static final int PREFIXED_MESSAGE_HEADER_LEN = 5;
     private static final byte MESSAGE_TYPE_LOGIN_RESPONSE = 'R';
     private static final byte MESSAGE_TYPE_PARAMETER_STATUS = 'S';
+    private static final byte MESSAGE_TYPE_PARAMETER_DESCRIPTION = 't';
     private static final byte MESSAGE_TYPE_ROW_DESCRIPTION = 'T';
     private static final byte MESSAGE_TYPE_PARSE_COMPLETE = '1';
     private static final byte MESSAGE_TYPE_BIND_COMPLETE = '2';
@@ -1327,6 +1328,9 @@ public class PGConnectionContext implements IOContext, Mutable {
             case MESSAGE_TYPE_PARSE_COMPLETE:
                 prepareParseComplete();
                 break;
+            case MESSAGE_TYPE_PARAMETER_DESCRIPTION:
+                prepareParameterDescription();
+                break;
             case MESSAGE_TYPE_BIND_COMPLETE:
                 prepareBindComplete();
                 break;
@@ -1337,6 +1341,26 @@ public class PGConnectionContext implements IOContext, Mutable {
                 processExecute();
                 break;
         }
+    }
+
+    private void prepareParameterDescription() {
+        ResponseAsciiSink sink = responseAsciiSink;
+        sink.put(MESSAGE_TYPE_PARAMETER_DESCRIPTION);
+        final long addr = sink.skip();
+        final int n;
+        boolean isInsert = Chars.equals(queryTag, TAG_INSERT);
+        if (isInsert) {
+            n = currentInsertStatement.getBindVariableTypes().size();
+        } else {
+            n = bindVariableService.getIndexedVariableCount();
+        }
+        sink.putNetworkShort((short) n);
+        for (int i = 0; i < n; i++) {
+            int questDBType = isInsert ? currentInsertStatement.getBindVariableTypes().get(i) : bindVariableService.getFunction(i).getType();
+            int pgTypeOid = TYPE_OIDS.get(questDBType);
+            sink.putNetworkInt(pgTypeOid);
+        }
+        sink.putLen(addr);
     }
 
     private void parseQueryText(long lo, long hi) throws BadProtocolException {
@@ -1432,14 +1456,12 @@ public class PGConnectionContext implements IOContext, Mutable {
         isEmptyQuery = false;
         queryCharacterStore.clear();
         portalCharacterStore.clear();
-        bindVariableService.clear();
         currentCursor = Misc.free(currentCursor);
         currentFactory = null;
         currentInsertStatement = null;
         rowCount = 0;
         queryTag = TAG_OK;
         queryText = null;
-        bindVariableSetters.clear();
     }
 
     private void prepareLoginOk() {
@@ -1490,7 +1512,7 @@ public class PGConnectionContext implements IOContext, Mutable {
     }
 
     private void prepareRowDescription() {
-        final RecordMetadata metadata = getMetadata();
+        final RecordMetadata metadata = currentFactory.getMetadata();
         ResponseAsciiSink sink = responseAsciiSink;
         sink.put(MESSAGE_TYPE_ROW_DESCRIPTION);
         final long addr = sink.skip();
@@ -1520,10 +1542,6 @@ public class PGConnectionContext implements IOContext, Mutable {
             }
         }
         sink.putLen(addr);
-    }
-
-    private RecordMetadata getMetadata() {
-        return currentFactory != null ? currentFactory.getMetadata() : currentInsertStatement.getMetadata();
     }
 
     private void prepareSslResponse() {
@@ -1644,16 +1662,43 @@ public class PGConnectionContext implements IOContext, Mutable {
             @Transient SqlCompiler compiler,
             @Transient AssociativeCache<RecordCursorFactory> factoryCache
     ) throws SqlException, BadProtocolException, PeerDisconnectedException, PeerIsSlowToReadException {
-        lo = lo + 1;
-        long hi = getStringLength(lo, msgLimit);
-        checkNotTrue(hi == -1, "bad portal name length [msgType='D']");
-        configureContextFromNamedStatement(lo, hi, compiler, factoryCache);
-
-        addToResponseQueue(MESSAGE_TYPE_ROW_DESCRIPTION);
+        final byte type = Unsafe.getUnsafe().getByte(lo);
+        if (type == 'S') { //prepared statement
+            lo = lo + 1;
+            long hi = getStringLength(lo, msgLimit);
+            checkNotTrue(hi == -1, "bad statement name length [msgType='D']");
+            compileQuery(compiler, factoryCache);
+            final CharSequence statementName = getStatementName(lo, hi);
+            NamedStatementWrapper wrapper = null;
+            if (statementName != null) {
+                LOG.debug().$("'P' statement [name=").$(statementName).$(']').$();
+                wrapper = namedStatementMap.get(statementName);
+                if (wrapper == null) {
+                    wrapper = namedStatementWrapperPool.pop();
+                    namedStatementMap.put(statementName, wrapper);
+                }
+                if (bindVariableService.getIndexedVariableCount() > 0) {
+                    if (wrapper.bindVariableTypes == null) {
+                        wrapper.bindVariableTypes = bindVarTypesPool.pop();
+                    }
+                    for (int i = 0; i < bindVariableService.getIndexedVariableCount(); i++) {
+                        wrapper.bindVariableTypes.add(TYPE_OIDS.get(bindVariableService.getFunction(i).getType()));
+                    }
+                }
+            }
+            addToResponseQueue(MESSAGE_TYPE_PARAMETER_DESCRIPTION);
+            addToResponseQueue(MESSAGE_TYPE_ROW_DESCRIPTION);
+        } else if (type == 'P') { //portal
+            lo = lo + 1;
+            long hi = getStringLength(lo, msgLimit);
+            checkNotTrue(hi == -1, "bad portal name length [msgType='D']");
+            configureContextFromNamedStatement(lo, hi, compiler, factoryCache);
+            addToResponseQueue(MESSAGE_TYPE_ROW_DESCRIPTION);
+        }
     }
 
     private void prepareRowDescriptionResponse() {
-        if (currentFactory != null || currentInsertStatement != null) {
+        if (currentFactory != null) {
             prepareRowDescription();
         } else {
             prepareNoDataMessage();

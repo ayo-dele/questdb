@@ -293,6 +293,21 @@ public class BindVariableService {
         }
     }
 
+    public void setLong256(int index, Long256 value) {
+        if (index < indexedVariables.size()) {
+            Function function = indexedVariables.getQuick(index);
+            if (function == null) {
+                indexedVariables.setQuick(index, new Long256BindVariable(value));
+            } else if (function instanceof Long256BindVariable) {
+                ((Long256BindVariable) function).value.copyFrom(value);
+            } else {
+                throw BindException.init().put("bind variable at ").put(index).put(" is already defined as ").put(ColumnType.nameOf(function.getType()));
+            }
+        } else {
+            indexedVariables.extendAndSet(index, new Long256BindVariable(value));
+        }
+    }
+
     public void setInt(int index, int value) {
         if (index < indexedVariables.size()) {
             Function function = indexedVariables.getQuick(index);

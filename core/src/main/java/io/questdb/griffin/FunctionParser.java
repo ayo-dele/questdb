@@ -198,27 +198,12 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
                     break;
             }
         } else {
-//            int indexedVariableCount = 0;
-//            int namedVariableCount = 0;
-//            if (sqlExecutionContext != null) {
-//                BindVariableService bindVariableService;
-//                bindVariableService = sqlExecutionContext.getBindVariableService();
-//                indexedVariableCount = bindVariableService.getIndexedVariableCount();
-//                namedVariableCount = bindVariableService.getNamedVariableCount();
-//            }
             mutableArgs.clear();
             mutableArgs.setPos(argCount);
             for (int n = 0; n < argCount; n++) {
                 mutableArgs.setQuick(n, stack.poll());
             }
             stack.push(inferType(node, mutableArgs, sqlExecutionContext));
-//            if (indexedVariableCount > 0) {
-//                stack.push(inferType(node, mutableArgs));
-//            } else if (namedVariableCount > 0) {
-//                stack.push(inferType(node, mutableArgs));
-//            } else {
-//                stack.push(createFunction(node, mutableArgs));
-//            }
         }
     }
 
@@ -646,11 +631,6 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
             }
         }
 
-        if (fuzzyMatchCount > 1) {
-            // ambiguous invocation target
-            throw invalidFunction("ambiguous function call", node, args);
-        }
-
         if (candidate == null) {
             // no signature match
             throw invalidArgument(node, args, candidateDescriptor);
@@ -659,36 +639,9 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
         //populate bindVariableService
         for (int i = 0; i < sparseBindVariablesArgs.size(); i++) {
             if (sparseBindVariablesArgs.getQuick(i) == 1) {
-                if (args.getQuick(i) instanceof NamedParameterUnknownTypeLinkFunction) {
-                    int argTypeMask = candidateDescriptor.getArgTypeMask(i);
-                    NamedParameterUnknownTypeLinkFunction func = (NamedParameterUnknownTypeLinkFunction) args.getQuick(i);
-                    String variableName = func.getVariableName();
-                    switch (argTypeMask) {
-                        case ColumnType.LONG:
-                            func.setType(ColumnType.LONG);
-                            sqlExecutionContext.getBindVariableService().setLong(Chars.toString(variableName, 1, variableName.length()), Numbers.LONG_NaN);
-                            break;
-                        case ColumnType.INT:
-                            func.setType(ColumnType.INT);
-                            sqlExecutionContext.getBindVariableService().setInt(Chars.toString(variableName, 1, variableName.length()), Numbers.INT_NaN);
-                            break;
-                    }
-                }
-                if (args.getQuick(i) instanceof IndexedParameterUnknownTypeLinkFunction) {
-                    int argTypeMask = candidateDescriptor.getArgTypeMask(i);
-                    IndexedParameterUnknownTypeLinkFunction func = (IndexedParameterUnknownTypeLinkFunction) args.getQuick(i);
-                    int variableIndex = func.getVariableIndex();
-                    switch (argTypeMask) {
-                        case ColumnType.LONG:
-                            func.setType(ColumnType.LONG);
-                            sqlExecutionContext.getBindVariableService().setLong(variableIndex, Numbers.LONG_NaN);
-                            break;
-                        case ColumnType.INT:
-                            func.setType(ColumnType.INT);
-                            sqlExecutionContext.getBindVariableService().setInt(variableIndex, Numbers.INT_NaN);
-                            break;
-                    }
-                }
+                Function argFunction = args.getQuick(i);
+                int argTypeMask = candidateDescriptor.getArgTypeMask(i);
+                populateTypeInfo(sqlExecutionContext, argTypeMask, argFunction);
             }
         }
 
@@ -716,6 +669,108 @@ public class FunctionParser implements PostOrderTreeTraversalAlgo.Visitor {
 
         LOG.debug().$("call ").$(node).$(" -> ").$(candidate.getSignature()).$();
         return checkAndCreateFunction(candidate, args, node.position, configuration, isNegated, isFlipped);
+    }
+
+    public static void populateTypeInfo(SqlExecutionContext sqlExecutionContext, int columnType, Function argFunction) {
+        if (argFunction instanceof NamedParameterUnknownTypeLinkFunction) {
+            NamedParameterUnknownTypeLinkFunction func = (NamedParameterUnknownTypeLinkFunction) argFunction;
+            String variableName = func.getVariableName();
+            func.setType(columnType);
+            String nameWithoutColon = Chars.toString(variableName, 1, variableName.length());
+            switch (columnType) {
+                case ColumnType.BOOLEAN:
+                    sqlExecutionContext.getBindVariableService().setBoolean(nameWithoutColon, false);
+                    break;
+                case ColumnType.BYTE:
+                    sqlExecutionContext.getBindVariableService().setByte(nameWithoutColon, (byte) 0);
+                    break;
+                case ColumnType.SHORT:
+                    sqlExecutionContext.getBindVariableService().setShort(nameWithoutColon, (short) 0);
+                    break;
+                case ColumnType.CHAR:
+                    sqlExecutionContext.getBindVariableService().setChar(nameWithoutColon, (char) 0);
+                    break;
+                case ColumnType.INT:
+                    sqlExecutionContext.getBindVariableService().setInt(nameWithoutColon, Numbers.INT_NaN);
+                    break;
+                case ColumnType.LONG:
+                    sqlExecutionContext.getBindVariableService().setLong(nameWithoutColon, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.DATE:
+                    sqlExecutionContext.getBindVariableService().setDate(nameWithoutColon, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.TIMESTAMP:
+                    sqlExecutionContext.getBindVariableService().setTimestamp(nameWithoutColon, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.FLOAT:
+                    sqlExecutionContext.getBindVariableService().setFloat(nameWithoutColon, Float.NaN);
+                    break;
+                case ColumnType.DOUBLE:
+                    sqlExecutionContext.getBindVariableService().setDouble(nameWithoutColon, Double.NaN);
+                    break;
+                case ColumnType.STRING:
+                    sqlExecutionContext.getBindVariableService().setStr(nameWithoutColon, null);
+                    break;
+                case ColumnType.SYMBOL:
+                    sqlExecutionContext.getBindVariableService().setStr(nameWithoutColon, null);
+                    break;
+                case ColumnType.LONG256:
+                    sqlExecutionContext.getBindVariableService().setLong256(nameWithoutColon, Long256Impl.NULL_LONG256);
+                    break;
+                case ColumnType.BINARY:
+                    sqlExecutionContext.getBindVariableService().setBin(nameWithoutColon, null);
+                    break;
+            }
+        }
+        if (argFunction instanceof IndexedParameterUnknownTypeLinkFunction) {
+            IndexedParameterUnknownTypeLinkFunction func = (IndexedParameterUnknownTypeLinkFunction) argFunction;
+            int variableIndex = func.getVariableIndex();
+            func.setType(columnType);
+            switch (columnType) {
+                case ColumnType.BOOLEAN:
+                    sqlExecutionContext.getBindVariableService().setBoolean(variableIndex, false);
+                    break;
+                case ColumnType.BYTE:
+                    sqlExecutionContext.getBindVariableService().setByte(variableIndex, (byte) 0);
+                    break;
+                case ColumnType.SHORT:
+                    sqlExecutionContext.getBindVariableService().setShort(variableIndex, (short) 0);
+                    break;
+                case ColumnType.CHAR:
+                    sqlExecutionContext.getBindVariableService().setChar(variableIndex, (char) 0);
+                    break;
+                case ColumnType.INT:
+                    sqlExecutionContext.getBindVariableService().setInt(variableIndex, Numbers.INT_NaN);
+                    break;
+                case ColumnType.LONG:
+                    sqlExecutionContext.getBindVariableService().setLong(variableIndex, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.DATE:
+                    sqlExecutionContext.getBindVariableService().setDate(variableIndex, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.TIMESTAMP:
+                    sqlExecutionContext.getBindVariableService().setTimestamp(variableIndex, Numbers.LONG_NaN);
+                    break;
+                case ColumnType.FLOAT:
+                    sqlExecutionContext.getBindVariableService().setFloat(variableIndex, Float.NaN);
+                    break;
+                case ColumnType.DOUBLE:
+                    sqlExecutionContext.getBindVariableService().setDouble(variableIndex, Double.NaN);
+                    break;
+                case ColumnType.STRING:
+                    sqlExecutionContext.getBindVariableService().setStr(variableIndex, null);
+                    break;
+                case ColumnType.SYMBOL:
+                    sqlExecutionContext.getBindVariableService().setStr(variableIndex, null);
+                    break;
+                case ColumnType.LONG256:
+                    sqlExecutionContext.getBindVariableService().setLong256(variableIndex, Long256Impl.NULL_LONG256);
+                    break;
+                case ColumnType.BINARY:
+                    sqlExecutionContext.getBindVariableService().setBin(variableIndex, null);
+                    break;
+            }
+        }
     }
 
     private Function createFunction(

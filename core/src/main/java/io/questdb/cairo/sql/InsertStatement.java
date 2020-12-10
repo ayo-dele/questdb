@@ -25,6 +25,7 @@
 package io.questdb.cairo.sql;
 
 import io.questdb.griffin.SqlExecutionContext;
+import io.questdb.std.IntList;
 
 import java.io.Closeable;
 
@@ -40,5 +41,6 @@ public interface InsertStatement extends Closeable {
 
     void detachWriter();
 
-    RecordMetadata getMetadata();
+    IntList getBindVariableTypes();
+
 }
