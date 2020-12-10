@@ -1535,11 +1535,15 @@ public class PGConnectionContext implements IOContext, Mutable {
             sink.putNetworkInt(-1);
             // this is special behaviour for binary fields to prevent binary data being hex encoded on the wire
             // format code
-            if (resultFormats.size() == 0) {
-                sink.putNetworkShort((short) 0); // format code
+            short value;
+            if (columnType == ColumnType.BINARY) {
+                value = 1;
+            } else if (resultFormats.size() == 0) {
+                value = 0;
             } else {
-                sink.putNetworkShort((short) resultFormats.get(i)); // format code
+                value = (short) resultFormats.get(i);
             }
+            sink.putNetworkShort(value); // format code
         }
         sink.putLen(addr);
     }
