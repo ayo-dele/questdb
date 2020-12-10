@@ -1681,6 +1681,7 @@ public class PGConnectionContext implements IOContext, Mutable {
                     if (wrapper.bindVariableTypes == null) {
                         wrapper.bindVariableTypes = bindVarTypesPool.pop();
                     }
+                    wrapper.bindVariableTypes.clear();
                     for (int i = 0; i < bindVariableService.getIndexedVariableCount(); i++) {
                         wrapper.bindVariableTypes.add(TYPE_OIDS.get(bindVariableService.getFunction(i).getType()));
                     }
@@ -2173,8 +2174,8 @@ public class PGConnectionContext implements IOContext, Mutable {
             @Transient AssociativeCache<RecordCursorFactory> factoryCache
     ) throws SqlException, PeerDisconnectedException, PeerIsSlowToReadException {
         queryText = wrapper.queryText;
-        bindVariableSetters.clear();
         if (wrapper.bindVariableTypes != null) {
+            bindVariableSetters.clear();
             setupCachedBindVariables(wrapper.bindVariableTypes);
         }
         if (compiler != null) {

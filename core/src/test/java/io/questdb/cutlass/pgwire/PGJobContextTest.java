@@ -2637,9 +2637,10 @@ nodejs code:
                         while (running.get()) {
                             try {
                                 PGJobContext.handleClientOperation(context);
-                            } catch (PeerDisconnectedException | BadProtocolException e) {
+                            } catch (BadProtocolException e) {
+                                LOG.error().$("bad protocol error ").$(e).$();
                                 break;
-                            } catch (PeerIsSlowToReadException | PeerIsSlowToWriteException ignored) {
+                            } catch (PeerDisconnectedException | PeerIsSlowToReadException | PeerIsSlowToWriteException ignored) {
                             }
                         }
                         nf.close(clientFd);
