@@ -75,13 +75,13 @@ public class NetUtils {
                                     // force exit
                                     i = n;
                                 } else {
-//                                    Assert.assertEquals(len, m);
-//                                    for (int j = 0; j < len; j++) {
-//                                        Assert.assertEquals("at " + j,
-//                                                Unsafe.getUnsafe().getByte(sendBuf + j),
-//                                                Unsafe.getUnsafe().getByte(recvBuf + j)
-//                                        );
-//                                    }
+                                    Assert.assertEquals(len, m);
+                                    for (int j = 0; j < len; j++) {
+                                        Assert.assertEquals("at " + j,
+                                                Unsafe.getUnsafe().getByte(sendBuf + j),
+                                                Unsafe.getUnsafe().getByte(recvBuf + j)
+                                        );
+                                    }
                                     // clear sendBuf
                                     sendPtr = sendBuf;
                                 }

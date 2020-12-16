@@ -2074,9 +2074,9 @@ public class PGConnectionContext implements IOContext, Mutable {
             }
         }
 
-        prepareForNewQuery();
         sendCurrentCursorTail = TAIL_SUCCESS;
         prepareExecuteTail(true);
+        prepareForNewQuery();
     }
 
     private void sendExecuteTail(int tail) throws PeerDisconnectedException, PeerIsSlowToReadException {
